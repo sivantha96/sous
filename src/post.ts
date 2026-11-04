@@ -10,8 +10,6 @@ export interface Draft {
   repo: string;
   number: number;
   head: string;
-  /** One short line for the review body, or empty. The points live in the inline comments. */
-  summary?: string;
   findings: Finding[];
 }
 
@@ -28,9 +26,6 @@ export const marker = (head: string): string => `<!-- sous:${head.slice(0, 12)} 
 export const hasMarker = (body: string | null | undefined): boolean => /<!-- sous:[0-9a-f]+ -->/.test(body ?? '');
 
 const render = (f: Finding): string => (f.fix?.trim() ? `${f.body}\n\nFix: ${f.fix}` : f.body);
-
-/** A review body is one short line. Long write-ups go nowhere: the points are the inline comments. */
-export const MAX_SUMMARY = 280;
 
 /** RIGHT-side line numbers a review comment may anchor to: lines a hunk adds or keeps. */
 export function rightLines(patch: string | undefined): Set<number> {
@@ -60,13 +55,8 @@ export function buildReview(
   d: Draft,
   opts: { pending: boolean; attribution: string; files: { filename: string; patch?: string }[] },
 ): ReviewPayload {
-  const summary = (d.summary ?? '').trim();
-  const problems = [
-    ...lintText(summary).map((p) => `summary: ${p}`),
-    ...d.findings.flatMap((f) => lintFinding(f).map((p) => `${f.path}:${f.line}: ${p}`)),
-  ];
-  if (summary.length > MAX_SUMMARY) problems.push(`summary is ${summary.length} characters; keep it to one line under ${MAX_SUMMARY}`);
-  if (/\n|^#|^\s*[-*] /m.test(summary)) problems.push('summary has headings, lists or several lines; put points in inline comments');
+  const problems = d.findings.flatMap((f) => lintFinding(f).map((p) => `${f.path}:${f.line}: ${p}`));
+  if (d.findings.length === 0) problems.push('no findings; record the head with `sous mark` instead');
   if (!/^[0-9a-f]{40}$/.test(d.head)) problems.push('head is not a full commit sha');
   const anchors = new Map(opts.files.map((f) => [f.filename, rightLines(f.patch)]));
   for (const f of d.findings) {
@@ -75,9 +65,10 @@ export function buildReview(
   if (problems.length) throw new LintError(problems);
 
   const sign = `_${opts.attribution}_\n\n${marker(d.head)}`;
+  // No review body: the inline comments are the whole review.
   const payload: ReviewPayload = {
     commit_id: d.head,
-    body: summary ? `${summary}\n\n${sign}` : sign,
+    body: '',
     comments: d.findings.map((f) => ({ path: f.path, line: f.line, side: 'RIGHT', body: `${render(f)}\n\n${sign}` })),
   };
   if (!opts.pending) payload.event = d.findings.some((f) => f.severity === 'major') ? 'REQUEST_CHANGES' : 'COMMENT';
@@ -94,7 +85,12 @@ interface ReviewComment {
 
 export async function postReview(gh: Gh, d: Draft, payload: ReviewPayload): Promise<{ reviewId: number; commentIds: number[] }> {
   if ((payload as { event?: string }).event === 'APPROVE') throw new Error('Sous never approves');
-  const review = await send<PostedReview>(gh, 'POST', `repos/${d.repo}/pulls/${d.number}/reviews`, payload);
+  const url = `repos/${d.repo}/pulls/${d.number}/reviews`;
+  // If GitHub ever requires a body for this event, fall back to the attribution line alone.
+  const review = await send<PostedReview>(gh, 'POST', url, payload).catch((e: Error) => {
+    if (!/body/i.test(e.message) || payload.body) throw e;
+    return send<PostedReview>(gh, 'POST', url, { ...payload, body: payload.comments[0]!.body.split('\n\n').slice(-2).join('\n\n') });
+  });
   const comments = await get<ReviewComment[]>(gh, `repos/${d.repo}/pulls/${d.number}/reviews/${review.id}/comments?per_page=100`);
   return { reviewId: review.id, commentIds: comments.map((c) => c.id) };
 }
@@ -108,11 +104,17 @@ interface Review {
 
 /**
  * Dismisses a request-changes review once its Majors are fixed. Only a review Sous wrote:
- * posted by this account, carrying the marker, and recorded in state.
+ * recorded in state, posted by this account, and with the marker on its comments (the body is empty).
  */
 export async function dismissOwn(gh: Gh, repo: string, n: number, reviewId: number, me: string, ownIds: number[], message: string): Promise<void> {
   const r = await get<Review>(gh, `repos/${repo}/pulls/${n}/reviews/${reviewId}`);
-  if (!ownIds.includes(reviewId) || r.user?.login !== me || !hasMarker(r.body)) throw new Error(`review ${reviewId} is not a Sous review; not dismissing`);
+  const notOurs = (): never => {
+    throw new Error(`review ${reviewId} is not a Sous review; not dismissing`);
+  };
+  if (!ownIds.includes(reviewId) || r.user?.login !== me) notOurs();
+  if (r.body && !hasMarker(r.body)) notOurs();
+  const comments = await get<{ body: string }[]>(gh, `repos/${repo}/pulls/${n}/reviews/${reviewId}/comments?per_page=100`);
+  if (!comments.some((c) => hasMarker(c.body)) && !hasMarker(r.body)) notOurs();
   if (r.state !== 'CHANGES_REQUESTED') throw new Error(`review ${reviewId} is ${r.state}, nothing to dismiss`);
   const problems = lintText(message);
   if (problems.length) throw new LintError(problems);
