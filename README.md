@@ -6,7 +6,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 
 ```
 ~/.sous/
-  config.json          orgs to watch, pause switch, reviews per run
+  config.json          orgs to watch, pause switch, reviews per run, the attribution line
   me/                  your voice and habits, the same in every org (local git)
   orgs/<org>/          one org's profile, rules, facts, examples, replay set, events, questions (local git)
   cache/               read-only clones; nothing in them is ever run
@@ -27,7 +27,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `sous due` | Finds PRs due in every org, reads CodeRabbit's state, picks this run's PRs (capped by `maxReviewsPerRun`). No model tokens |
 | `sous gate` | Waits for CodeRabbit on one PR, polling every 3 minutes |
 | `sous checkout` | Read-only worktree of a PR head |
-| `sous post` | The only way a review leaves the machine: voice lint, marker, COMMENT or REQUEST_CHANGES, never APPROVE |
+| `sous post` | The only way a review leaves the machine: voice lint, one-line body, lines checked against the diff, the italic attribution and marker on every comment, COMMENT or REQUEST_CHANGES, never APPROVE |
 | `sous mark` | Records a head reviewed with nothing to post |
 | `sous dismiss` | Dismisses a request-changes review, only one Sous wrote |
 | `sous leak-check` | Fails when text bound for git names anything from local org memory |

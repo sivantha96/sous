@@ -10,8 +10,8 @@ export interface Draft {
   repo: string;
   number: number;
   head: string;
-  /** The review body in the "AI review" format. */
-  summary: string;
+  /** One short line for the review body, or empty. The points live in the inline comments. */
+  summary?: string;
   findings: Finding[];
 }
 
@@ -27,7 +27,26 @@ export interface ReviewPayload {
 export const marker = (head: string): string => `<!-- sous:${head.slice(0, 12)} -->`;
 export const hasMarker = (body: string | null | undefined): boolean => /<!-- sous:[0-9a-f]+ -->/.test(body ?? '');
 
-const render = (f: Finding): string => (f.fix ? `${f.body}\n\nFix: ${f.fix}` : f.body);
+const render = (f: Finding): string => (f.fix?.trim() ? `${f.body}\n\nFix: ${f.fix}` : f.body);
+
+/** A review body is one short line. Long write-ups go nowhere: the points are the inline comments. */
+export const MAX_SUMMARY = 280;
+
+/** RIGHT-side line numbers a review comment may anchor to: lines a hunk adds or keeps. */
+export function rightLines(patch: string | undefined): Set<number> {
+  const lines = new Set<number>();
+  let line = 0;
+  for (const row of (patch ?? '').split('\n')) {
+    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
+    if (hunk) {
+      line = Number(hunk[1]);
+      continue;
+    }
+    if (line === 0 || row.startsWith('-') || row.startsWith('\\')) continue;
+    lines.add(line++);
+  }
+  return lines;
+}
 
 export class LintError extends Error {
   readonly problems: string[];
@@ -37,18 +56,29 @@ export class LintError extends Error {
   }
 }
 
-export function buildReview(d: Draft, opts: { pending: boolean }): ReviewPayload {
+export function buildReview(
+  d: Draft,
+  opts: { pending: boolean; attribution: string; files: { filename: string; patch?: string }[] },
+): ReviewPayload {
+  const summary = (d.summary ?? '').trim();
   const problems = [
-    ...lintText(d.summary).map((p) => `summary: ${p}`),
+    ...lintText(summary).map((p) => `summary: ${p}`),
     ...d.findings.flatMap((f) => lintFinding(f).map((p) => `${f.path}:${f.line}: ${p}`)),
   ];
+  if (summary.length > MAX_SUMMARY) problems.push(`summary is ${summary.length} characters; keep it to one line under ${MAX_SUMMARY}`);
+  if (/\n|^#|^\s*[-*] /m.test(summary)) problems.push('summary has headings, lists or several lines; put points in inline comments');
   if (!/^[0-9a-f]{40}$/.test(d.head)) problems.push('head is not a full commit sha');
+  const anchors = new Map(opts.files.map((f) => [f.filename, rightLines(f.patch)]));
+  for (const f of d.findings) {
+    if (!anchors.get(f.path)?.has(f.line)) problems.push(`${f.path}:${f.line}: not a line in the diff; GitHub would reject the whole review`);
+  }
   if (problems.length) throw new LintError(problems);
 
+  const sign = `_${opts.attribution}_\n\n${marker(d.head)}`;
   const payload: ReviewPayload = {
     commit_id: d.head,
-    body: `${d.summary.trim()}\n\n${marker(d.head)}`,
-    comments: d.findings.map((f) => ({ path: f.path, line: f.line, side: 'RIGHT', body: `${render(f)}\n\n${marker(d.head)}` })),
+    body: summary ? `${summary}\n\n${sign}` : sign,
+    comments: d.findings.map((f) => ({ path: f.path, line: f.line, side: 'RIGHT', body: `${render(f)}\n\n${sign}` })),
   };
   if (!opts.pending) payload.event = d.findings.some((f) => f.severity === 'major') ? 'REQUEST_CHANGES' : 'COMMENT';
   return payload;

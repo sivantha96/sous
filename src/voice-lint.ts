@@ -5,7 +5,7 @@ export interface Finding {
   path: string;
   line: number;
   body: string;
-  /** The fix, named inline. Required for major and minor. */
+  /** Only when the author needs a specific fix, or there is one solid solution. Otherwise name the issue and let them solve it. */
   fix?: string;
 }
 
@@ -26,7 +26,6 @@ export function lintText(text: string): string[] {
 
 export function lintFinding(f: Finding): string[] {
   const problems = lintText(`${f.body}\n${f.fix ?? ''}`);
-  if (f.severity !== 'nit' && !f.fix?.trim()) problems.push(`${f.severity} finding has no fix`);
   if (/^#{1,6}\s/m.test(f.body)) problems.push('heading in an inline comment');
   if (!f.path || !Number.isInteger(f.line) || f.line < 1) problems.push('finding has no file and line');
   return problems;
