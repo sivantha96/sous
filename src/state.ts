@@ -81,3 +81,22 @@ export function releaseLock(org: string, session: string): boolean {
   rmSync(lockPath(org));
   return true;
 }
+
+/**
+ * PRs Sivantha asked Sous to review by hand (`/review <link>`). `sous post` only posts where Sous
+ * was asked, and a hand review counts. Only the main session can add one: no subagent may run `sous ask`.
+ */
+const askedPath = (org: string): string => join(orgDir(org), 'asked.json');
+export const askedByHand = (org: string, key: string): boolean => readJson<string[]>(askedPath(org), []).includes(key);
+export function askByHand(org: string, key: string): void {
+  const keys = readJson<string[]>(askedPath(org), []);
+  if (!keys.includes(key)) writeJson(askedPath(org), [...keys, key]);
+}
+
+/** Asked for your review: by name, or through a team you are in, in the PR's own org. */
+export function askedYou(req: { users: { login: string }[]; teams: { slug: string }[] }, me: string, org: string, myTeams: { slug: string; organization: { login: string } }[]): boolean {
+  const lower = (s: string) => s.toLowerCase();
+  if (req.users.some((u) => lower(u.login) === lower(me))) return true;
+  const mine = new Set(myTeams.filter((t) => lower(t.organization.login) === lower(org)).map((t) => lower(t.slug)));
+  return req.teams.some((t) => mine.has(lower(t.slug)));
+}

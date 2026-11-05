@@ -25,13 +25,15 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 - **One schedule per org.** `/run <org>` reviews only that org's PRs that request your review, so each org gets its own task and interval. `/run` with no org covers every org in one task.
 - **No overlap.** `/run` takes a lock on each org it covers (`sous due --lock`), so a run that is still working when the next one starts keeps that org; the next run skips it. A run that dies leaves the lock, which expires after 90 minutes.
 - **Cap.** `maxReviewsPerRun` applies to each run, so with one schedule per org it is a cap per org.
-- **By hand.** `/review <PR link>` reviews one PR now, whether or not it is due and whoever asked for review. Its cost and problems go through the same learning round as a scheduled run.
+- **By hand.** `/review <PR link>` reviews one PR now, whether or not it is due and whoever asked for review: it records the request with `sous ask`, which only the main session can run. Its cost and problems go through the same learning round as a scheduled run.
+- **Questions.** A run never stops to ask. Its doubts go to `questions.md`, each written with its background first (`prompts/question-format.md`), and `/learn` asks them one at a time.
 
 ## Commands
 
 | Command | Does |
 |---|---|
 | `sous due` | Finds PRs due in every org (or one with `--org`), reads CodeRabbit's state, picks this run's PRs (capped by `maxReviewsPerRun`). No model tokens. A PR is due when it is new, was pushed, has replies on Sous's threads, or was re-requested by someone else after Sous's last review with no push (`REREQUESTED`). An org whose gh account can't sign in is listed as `blocked`; a PR that errors is listed as skipped, and the rest still run. With `--lock <session>`, an org another run holds is listed as `locked` |
+| `sous ask` | Records a hand review, so `sous post` may post on a PR that never asked for you. Main session only |
 | `sous unlock` | Releases the run lock `sous due --lock` took, when the given session holds it |
 | `sous gate` | Waits for CodeRabbit on one PR, polling every 3 minutes |
 | `sous checkout` | Read-only worktree of a PR head, without `.claude/`, `.mcp.json` and other AI-config paths (their changes are reviewed from the diff, their base copies read with `git show`). Also lists added lines that carry invisible or bidi characters (`hiddenCharacters`) |
@@ -83,7 +85,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 - Text that fails the voice lint is never posted.
 - Memory bullets under `candidates/`, or marked `(trust: teammate)`, rank below the lead's rules and never override one. A teammate's candidate becomes a rule only after Sivantha says yes in `questions.md`.
 - Every comment, reply and dismissal passes `src/outbound.ts` first. Any of these is refused: a name from another watched org, the canary line `sous` keeps at the top of every memory file, a link outside `github.com/<org>/` and the profile's `linkHosts`, or a link with a query string.
-- `sous post` posts only to an open PR in a watched org that asked for your review or that Sous reviewed before. It posts at most `maxCommentsPerReview` comments (default 10).
+- `sous post` posts only to an open PR in a watched org that asks for your review (by name, or through a team you are in), that you asked Sous to review by hand, or that Sous reviewed before. It posts at most `maxCommentsPerReview` comments (default 10).
 - `.claude/settings.json` blocks agents from writing to GitHub except through `sous`.
 
 `pnpm check` runs the typecheck and tests.

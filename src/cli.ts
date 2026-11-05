@@ -25,7 +25,7 @@ import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { diffTerms, factState, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
-import { emptyPr, loadState, logEvent, prKey, readEvents, releaseLock, saveState, takeLock } from './state.ts';
+import { askByHand, askedByHand, askedYou, emptyPr, loadState, logEvent, prKey, readEvents, releaseLock, saveState, takeLock } from './state.ts';
 
 const run = promisify(execFile);
 
@@ -199,6 +199,16 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     return 0;
   },
 
+  /** Records a hand review (`/review <link>`), so `sous post` may post on a PR that never asked. Main session only. */
+  async ask(args) {
+    const [org, repo, n] = args;
+    if (!org || !repo || !n) throw new Error('usage: sous ask <org> <owner/repo> <number>');
+    if (!loadConfig().orgs.includes(org) || !repo.toLowerCase().startsWith(`${org.toLowerCase()}/`)) throw new Error(`${repo} is not in a watched org`);
+    askByHand(org, prKey(repo, Number(n)));
+    print({ asked: prKey(repo, Number(n)) });
+    return 0;
+  },
+
   /** Releases the run lock `sous due --lock` took, when this session holds it. */
   async unlock(args) {
     const [org, session] = args;
@@ -362,11 +372,13 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
 
     const files = await getAll<{ filename: string; patch?: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/files?per_page=100`);
-    const pull = await get<{ base: { ref: string }; state: string; requested_reviewers: { login: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
-    // The recipient is fixed by code, never by the draft: a watched org, an open PR, and one Sous was asked to review or already reviewed.
+    const pull = await get<{ base: { ref: string }; state: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
+    // The recipient is fixed by code, never by the draft: a watched org, an open PR, and one Sous already reviewed, Sivantha asked for by hand, or that asks for Sivantha's review by name or through a team.
     if (!config.orgs.includes(draft.org) || !draft.repo.toLowerCase().startsWith(`${draft.org.toLowerCase()}/`)) throw new Error(`${draft.repo} is not in a watched org; not posting`);
     if (pull.state !== 'open') throw new Error(`${key} is ${pull.state}; not posting`);
-    if (!state.prs[key] && !pull.requested_reviewers.some((u) => u.login === me)) throw new Error(`${key} never asked for your review; not posting`);
+    const asked = async () =>
+      askedYou(await get<{ users: { login: string }[]; teams: { slug: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`), me, draft.org, await getAll<{ slug: string; organization: { login: string } }>(gh, 'user/teams?per_page=100'));
+    if (!state.prs[key] && !askedByHand(draft.org, key) && !(await asked())) throw new Error(`${key} never asked for your review, by name or through your teams; not posting`);
     const clone = join(sousHome(), 'cache', draft.repo);
     if (!existsSync(clone)) throw new Error(`no clone at ${clone}; run sous checkout first`);
     const git = (...a: string[]): string | null => {

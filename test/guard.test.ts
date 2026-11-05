@@ -154,3 +154,8 @@ test('gh and sous run as a call of their own, since a chained one runs in the sa
   assert.ok(checkCommand('./bin/sous due 2>&1', 'main', '/tmp').ok);
   assert.ok(checkCommand('pnpm check && git push -u origin sous/x', 'main', '/tmp').ok);
 });
+
+test('only the main session can mark a PR as asked for by hand', () => {
+  for (const agent of ['gatherer', 'lens', 'verifier', 'writer', 'reply-judge', 'reflector', 'signal-collector']) assert.ok(!ok('./bin/sous ask acme acme/r 1', roleOf(agent)), agent);
+  assert.ok(checkCommand('./bin/sous ask acme acme/r 1', 'main', '/tmp').ok);
+});
