@@ -44,6 +44,6 @@ Candidates, system facts and voice notes skip the gate; they don't change what S
 2. Run `./bin/sous leak-check --diff origin/main`. If it fails, remove the org detail and run it again.
 3. Push and open a PR with `gh pr create`. Sivantha merges; you never do.
 
-**Questions.** Every doubt goes to `questions.md` as one entry: the PR, what each side says, the evidence, and the choice you need. Never ask during a review run.
+**Questions.** Every doubt goes to `questions.md` as one entry in the form `prompts/question-format.md` sets: background first, then the choice. Never ask during a review run. An engine change that needs the replay gate and couldn't run it is a question too: say what the change does, why the gate matters (a cheaper or stricter prompt can quietly find less), and the exact command that runs it.
 
 Append `{"type":"learned", ...}` to `events.jsonl` with counts, and reply with one line per output, starting with the run: its reviews, problems, paid tokens and minutes against the median.

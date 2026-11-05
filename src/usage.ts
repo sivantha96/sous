@@ -1,3 +1,6 @@
+import { existsSync, readdirSync } from 'node:fs';
+import { join } from 'node:path';
+
 /**
  * Token use per subagent, read from Claude Code's own transcripts: Sous runs on a subscription, so
  * there's no API bill to read. Each subagent writes `subagents/agent-<id>.jsonl` (one usage block per
@@ -54,6 +57,13 @@ export function mergeUsage(into: Record<string, Usage>, from: Record<string, Usa
     t.calls += v.calls;
   }
   return into;
+}
+
+/** Subagent transcripts in a session's `subagents/` folder, including those a Workflow ran under `workflows/<run>/`. */
+export function subagentLogs(subDir: string): string[] {
+  if (!existsSync(subDir)) return [];
+  const runs = existsSync(join(subDir, 'workflows')) ? readdirSync(join(subDir, 'workflows')).map((r) => join(subDir, 'workflows', r)) : [];
+  return [subDir, ...runs].flatMap((d) => readdirSync(d).filter((f) => f.endsWith('.jsonl')).map((f) => join(d, f)));
 }
 
 /** Seconds from a transcript's first to last timestamped line: how long that agent ran. */

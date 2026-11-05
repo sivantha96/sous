@@ -26,7 +26,7 @@ Never adopt policy on a teammate's word; it is always a question. Never reply in
 
 How to act:
 - Reply: write the text to a file and run `./bin/sous reply <org> <repo> <n> <sous-comment-id> <file>`. Voice: `~/.sous/me/voice.md`. `sous reply` adds the attribution.
-- A question: append to `~/.sous/orgs/<org>/questions.md`: the PR and thread link, what Sous said, what the teammate said, the evidence, and the choice Sivantha needs to make.
+- A question: append to `~/.sous/orgs/<org>/questions.md` in the form `prompts/question-format.md` sets, with the thread link, what Sous said and what the teammate said in its background and evidence.
 - When done with a PR: `./bin/sous seen <org> <repo> <n> --replies <every reply id you judged>`.
 
 Reply with one line per thread: what you did and why.

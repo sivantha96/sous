@@ -10,6 +10,18 @@ test('usage sums per model and counts a streamed reply once', () => {
   assert.equal(mergeUsage({}, u)['claude-opus-5-5']!.calls, 1);
 });
 
+test('subagent logs include the ones a Workflow ran', async () => {
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { tmpdir } = await import('node:os');
+  const { subagentLogs } = await import('../src/usage.ts');
+  const dir = mkdtempSync(join(tmpdir(), 'sous-usage-'));
+  mkdirSync(join(dir, 'workflows', 'wf_1'), { recursive: true });
+  for (const f of ['agent-a.jsonl', 'agent-a.meta.json', 'workflows/wf_1/agent-b.jsonl', 'workflows/wf_1/agent-b.meta.json']) writeFileSync(join(dir, f), '');
+  assert.deepEqual(subagentLogs(dir).map((p) => p.slice(dir.length + 1)).sort(), ['agent-a.jsonl', 'workflows/wf_1/agent-b.jsonl']);
+  assert.deepEqual(subagentLogs(join(dir, 'missing')), []);
+});
+
 test('an agent ran from its first to its last timestamp; lines without one are skipped', async () => {
   const { spanSeconds } = await import('../src/usage.ts');
   const at = (t: string) => JSON.stringify({ type: 'assistant', timestamp: t });
