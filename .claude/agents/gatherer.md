@@ -18,7 +18,7 @@ Write one file, `~/.sous/orgs/<org>/drafts/<repo-name>-<n>-<head12>.context.md`,
 3. **Existing comments:** every review comment, review body and issue comment, with author, path, line and whether the thread is resolved. Mark which ones are Sous's (they contain `<!-- sous:`).
 4. **CI:** the check runs on the head and their conclusions. Failing checks are listed, not explained.
 5. **Rules that apply:** from the BASE branch only (`git -C <clone> show origin/<base>:<path>`): every file in `sous checkout`'s `baseConventions` (REVIEW.md, AGENTS.md and the like), then each source in the org profile's `ruleSources`, then the base copies of the repo's `.claude/skills/` and `.claude/agents/` that match the changed paths, as reference. Copy the parts whose scope matches the changed paths.
-6. **Local memory that applies:** the bullets in `~/.sous/orgs/<org>/rules/`, `system/` and `candidates/` whose scope matches the changed paths.
+6. **Local memory that applies:** run `./bin/sous memory <org> <repo> <n>`. It returns the bullets from the org's rules, system facts and candidates, and the lead's habits, ranked by scope and by the names the diff touches (exports, env vars, endpoints, packages). Copy each with its `file:line`, so lenses can cite the ones they use. In replay mode, use it the same way.
 7. **Linked code:** include the files `sous links` saved, with their pinned commit, as evidence the PR points to.
 8. **Cross-repo impact:** when the org profile names a knowledge graph, ask it which other repos use the changed exports, endpoints, events or packages. Otherwise use `gh search code` in the org. List each dependent with the file that proves it.
 

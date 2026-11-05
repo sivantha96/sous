@@ -14,6 +14,7 @@ import { commitAt, gateFails, parseAiReview, scoreCase, totals, type Case, type 
 import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
 import { codeLinks, plan } from './plan.ts';
+import { diffTerms, factState, parseBullets, pinBullet, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
 import { emptyPr, loadState, logEvent, prKey, saveState } from './state.ts';
 
@@ -64,6 +65,19 @@ async function baseline(org: string, account: string): Promise<number> {
   }
   saveState(org, state);
   return marked;
+}
+
+/** Every memory bullet for an org: its rules, system facts and candidates, then the lead's own habits. */
+function memoryBullets(org: string): Bullet[] {
+  const out: Bullet[] = [];
+  for (const [label, dir] of [['org', orgDir(org)], ['me', meDir()]] as const) {
+    for (const sub of label === 'org' ? ['rules', 'system', 'candidates'] : ['.']) {
+      const d = join(dir, sub);
+      if (!existsSync(d)) continue;
+      for (const f of readdirSync(d).filter((x) => x.endsWith('.md'))) out.push(...parseBullets(`${label === 'me' ? 'me' : sub}/${f}`, readFileSync(join(d, f), 'utf8')));
+    }
+  }
+  return out;
 }
 
 const commands: Record<string, (args: string[]) => Promise<number>> = {
@@ -502,6 +516,86 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     appendLine(log, { at: new Date().toISOString(), label: values.label ?? '', ...now, accepted });
     print({ ...now, baseline, fails, accepted, perCase: scores });
     return values.gate && fails.length ? 1 : 0;
+  },
+
+  /**
+   * `sous memory <org> <repo> <n>`: the memory bullets for a PR, by scope and by the names the diff touches, ranked.
+   * `sous memory hits <org>`: when each bullet last drove a posted finding, for pruning.
+   */
+  async memory(args) {
+    if (args[0] === 'hits') {
+      const org = args[1];
+      if (!org) throw new Error('usage: sous memory hits <org>');
+      const hits = new Map<string, { count: number; last: string }>();
+      const log = join(orgDir(org), 'events.jsonl');
+      for (const line of existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []) {
+        const e = JSON.parse(line) as { type: string; at: string; findings?: { memory?: string[] }[] };
+        if (e.type !== 'reviewed') continue;
+        for (const ref of (e.findings ?? []).flatMap((f) => f.memory ?? [])) hits.set(ref, { count: (hits.get(ref)?.count ?? 0) + 1, last: e.at });
+      }
+      print(Object.fromEntries([...hits.entries()].sort((a, b) => b[1].last.localeCompare(a[1].last))));
+      return 0;
+    }
+    const [org, repo, n] = args;
+    if (!org || !repo || !n) throw new Error('usage: sous memory <org> <owner/repo> <number> | sous memory hits <org>');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const files = (await getAll<{ filename: string; patch?: string }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).filter((f) => !isNoise(f.filename));
+    const bullets = memoryBullets(org);
+    const hits = searchMemory(bullets, files.map((f) => f.filename), diffTerms(files));
+    print(hits.map((h) => ({ at: `${h.bullet.file}:${h.bullet.line}`, score: h.score, matchedBy: h.matchedBy, text: h.bullet.raw })));
+    return 0;
+  },
+
+  /**
+   * Checks every cited fact against the repo: `stale` when its file changed after the pinned commit,
+   * `gone` when the file no longer exists. `--pin` records today's commit on unpinned cites;
+   * `--retire` removes bullets whose every cited file is gone. Changes are committed to memory.
+   */
+  async facts(args) {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { pin: { type: 'boolean' }, retire: { type: 'boolean' } } });
+    const [org] = positionals;
+    if (!org) throw new Error('usage: sous facts <org> [--pin] [--retire]');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const defaultRepo = profile.ruleSources[0]?.split(':')[0];
+    const latestCache = new Map<string, string | null | 'deleted'>();
+    const latest = async (c: Cite): Promise<string | null | 'deleted'> => {
+      const repo = c.repo ?? defaultRepo;
+      if (!repo) return null;
+      const key = `${repo}:${c.path}`;
+      if (!latestCache.has(key)) {
+        const commits = await get<{ sha: string }[]>(gh, `repos/${repo}/commits?path=${encodeURIComponent(c.path)}&per_page=1`).catch(() => []);
+        const exists = await get(gh, `repos/${repo}/contents/${c.path}`).then(() => true, () => false);
+        latestCache.set(key, exists ? (commits[0]?.sha ?? null) : 'deleted');
+      }
+      return latestCache.get(key)!;
+    };
+    const report: { at: string; state: string; cite: string }[] = [];
+    let changed = 0;
+    for (const dir of ['rules', 'system', 'candidates']) {
+      const d = join(orgDir(org), dir);
+      if (!existsSync(d)) continue;
+      for (const f of readdirSync(d).filter((x) => x.endsWith('.md'))) {
+        const path = join(d, f);
+        const lines = readFileSync(path, 'utf8').split('\n');
+        for (const b of parseBullets(`${dir}/${f}`, lines.join('\n')).filter((b) => b.cites.length)) {
+          const states = await Promise.all(b.cites.map(async (c) => ({ c, s: factState(c, await latest(c)), sha: await latest(c) })));
+          for (const { c, s } of states) if (s !== 'current') report.push({ at: `${b.file}:${b.line}`, state: s, cite: `${c.repo ?? defaultRepo}:${c.path}${c.sha ? `@${c.sha}` : ''}` });
+          if (values.retire && states.every((x) => x.s === 'gone')) {
+            lines[b.line - 1] = '\u0000';
+            changed++;
+          } else if (values.pin && states.some((x) => x.s === 'unpinned')) {
+            lines[b.line - 1] = pinBullet(b.raw, states.map(({ c, s, sha }) => (s === 'unpinned' && typeof sha === 'string' ? { ...c, sha } : c)));
+            changed++;
+          }
+        }
+        writeFileSync(path, lines.filter((l) => l !== '\u0000').join('\n'));
+      }
+    }
+    if (changed) await commitMemory(orgDir(org), `facts: ${values.retire ? 'retire facts whose files are gone' : ''}${values.pin ? ' pin unpinned cites' : ''}`.trim());
+    print({ changed, notCurrent: report });
+    return 0;
   },
 
   /** How deep to review: lenses, the missed pass and risk drivers, from the changed paths alone. */
