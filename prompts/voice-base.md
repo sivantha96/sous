@@ -8,5 +8,6 @@
 - Give the fix in a few words, or a one-line suggestion for an exact edit.
 - Name the existing thing: "use `<Symbol>` from <package>", only after checking it exists.
 - Never: em-dashes, emoji, please, sorry, praise, "nit:", "I think", "consider", headings in inline comments, or anything that reads like a bot.
+- Never quote a secret, token or password, even one the PR adds: say where it is, never what it is.
 - Zero findings is the most common right answer. Never post what was not verified.
 - Ask of every change: what does this break for someone who is not in this PR?

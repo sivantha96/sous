@@ -12,6 +12,7 @@ import { buildReview, dismissOwn, hasMarker, LintError, postReview, signed, type
 import { commitAt, gateFails, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
 import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
+import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
 import { emptyPr, loadState, logEvent, prKey, saveState } from './state.ts';
 
 const run = promisify(execFile);
@@ -165,8 +166,18 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
     await run('git', ['fetch', '-q', 'origin', `pull/${n}/head`, `+refs/heads/${base}:refs/remotes/origin/${base}`], { cwd: clone, env });
     const tree = join(clone, '.worktrees', `${n}-${head.slice(0, 12)}`);
-    if (!existsSync(tree)) await run('git', ['worktree', 'add', '-q', '--detach', tree, head], { cwd: clone, env });
-    print({ tree, baseRef: `origin/${base}`, readInstructionsWith: `git -C ${clone} show origin/${base}:<path>` });
+    // A checkout made before AI-config folders were excluded is rebuilt.
+    if (existsSync(tree) && AI_CONFIG.some((p) => existsSync(join(tree, p)))) await run('git', ['worktree', 'remove', '--force', tree], { cwd: clone });
+    if (!existsSync(tree)) {
+      // The PR head's .claude/, .mcp.json and similar never reach an agent's working folder.
+      // Their changes are still reviewed from the diff, and their base copies are read with git show.
+      await run('git', ['worktree', 'add', '-q', '--no-checkout', '--detach', tree, head], { cwd: clone, env });
+      await run('git', ['sparse-checkout', 'set', '--no-cone', ...sparsePatterns()], { cwd: tree });
+      await run('git', ['checkout', '-q', '--detach', head], { cwd: tree });
+    }
+    const { stdout: baseFiles } = await run('git', ['ls-tree', '--name-only', `origin/${base}`], { cwd: clone });
+    const conventions = CONVENTION_FILES.filter((f) => baseFiles.split('\n').includes(f));
+    print({ tree, baseRef: `origin/${base}`, readInstructionsWith: `git -C ${clone} show origin/${base}:<path>`, baseConventions: conventions, excludedFromCheckout: AI_CONFIG });
     return 0;
   },
 
@@ -415,6 +426,12 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     appendLine(log, { at: new Date().toISOString(), label: values.label ?? '', ...now, accepted });
     print({ ...now, baseline, fails, accepted, perCase: scores });
     return values.gate && fails.length ? 1 : 0;
+  },
+
+  /** Prints which of the given paths are noise (lockfiles, generated output), one per line. */
+  async noise(args) {
+    for (const p of args.filter(isNoise)) console.log(p);
+    return 0;
   },
 
   async pause(args) {

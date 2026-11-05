@@ -1,3 +1,5 @@
+import { findSecrets } from './published.ts';
+
 export type Severity = 'major' | 'minor' | 'nit';
 
 export interface Finding {
@@ -23,7 +25,7 @@ const BANNED: [RegExp, string][] = [
 ];
 
 export function lintText(text: string): string[] {
-  return BANNED.filter(([re]) => re.test(text)).map(([, what]) => what);
+  return [...BANNED.filter(([re]) => re.test(text)).map(([, what]) => what), ...findSecrets(text).map((s) => `${s} in text: cite where it is, never the value`)];
 }
 
 export function lintFinding(f: Finding): string[] {

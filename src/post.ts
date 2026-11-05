@@ -1,3 +1,4 @@
+import { cleanForPublishing } from './published.ts';
 import { get, send, type Gh } from './gh.ts';
 import { lintFinding, lintText, type Finding } from './voice-lint.ts';
 
@@ -26,7 +27,7 @@ export const marker = (head: string): string => `<!-- sous:${head.slice(0, 12)} 
 export const hasMarker = (body: string | null | undefined): boolean => /<!-- sous:[0-9a-f]+ -->/.test(body ?? '');
 
 /** Every comment and reply Sous posts ends with the italic attribution, then the hidden marker. */
-export const signed = (text: string, attribution: string, head: string): string => `${text.trim()}\n\n_${attribution}_\n\n${marker(head)}`;
+export const signed = (text: string, attribution: string, head: string): string => `${cleanForPublishing(text.trim())}\n\n_${attribution}_\n\n${marker(head)}`;
 
 const render = (f: Finding): string => (f.fix?.trim() ? `${f.body}\n\nFix: ${f.fix}` : f.body);
 

@@ -21,9 +21,8 @@ export interface DueItem {
   threads: ThreadSignal[];
 }
 
-// Lockfiles and generated output carry no reviewable intent.
-const NOISE = [/(^|\/)(pnpm-lock\.yaml|package-lock\.json|yarn\.lock|uv\.lock|poetry\.lock|Cargo\.lock|go\.sum|Podfile\.lock)$/, /\.snap$/, /(^|\/)(dist|generated|__generated__)\//];
-export const isNoiseOnly = (files: string[]): boolean => files.length > 0 && files.every((f) => NOISE.some((re) => re.test(f)));
+import { isNoiseOnly } from './noise.ts';
+export { isNoiseOnly };
 
 export function classify(state: OrgState, repo: string, n: number, head: string): Reason | null {
   const seen = state.prs[prKey(repo, n)];

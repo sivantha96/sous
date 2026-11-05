@@ -1,0 +1,17 @@
+#!/usr/bin/env node
+// PreToolUse hook: reads the tool call on stdin, denies with a reason, or falls through.
+import { decide } from "../src/guard.ts";
+let raw = "";
+process.stdin.on("data", (c) => (raw += c));
+process.stdin.on("end", () => {
+  let verdict;
+  try {
+    verdict = decide(JSON.parse(raw));
+  } catch (e) {
+    verdict = { ok: false, reason: `sous-guard could not read the tool call: ${e.message}` };
+  }
+  if (!verdict.ok) {
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: verdict.reason } }));
+  }
+  process.exit(0);
+});

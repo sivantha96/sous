@@ -24,7 +24,26 @@
       "Bash(gh api * --input *)",
       "Bash(git push --force:*)",
       "Bash(git push -f:*)",
-      "Bash(git push origin main:*)"
+      "Bash(git push origin main:*)",
+      "Bash(curl:*)",
+      "Bash(wget:*)",
+      "Bash(nc:*)",
+      "Bash(ssh:*)",
+      "Bash(scp:*)",
+      "Bash(rsync:*)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Read|Grep|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/bin/sous-guard"
+          }
+        ]
+      }
     ]
   }
 }
