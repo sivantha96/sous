@@ -38,8 +38,18 @@ test('the judge pairs the same point made elsewhere; paths match without their f
   const gold = [{ path: 'src/boot.ts', line: 45, text: '', source: 'inline' as const }, { path: 'a.md', line: 27, text: '', source: 'ai-review' as const }];
   const f = (path: string, line: number) => ({ severity: 'major' as const, path, line, body: 'x' });
   // Same point 44 lines away: only the judge can pair it. Folder-less gold path matches by suffix.
-  assert.equal(scoreCase('c', gold, [f('src/boot.ts', 89), f('docs/decisions/a.md', 20)]).matched, 1);
-  assert.equal(scoreCase('c', gold, [f('src/boot.ts', 89), f('docs/decisions/a.md', 20)], 10, [[0, 0]]).matched, 2);
+  assert.equal(scoreCase('c', gold, [f('src/boot.ts', 89), f('docs/decisions/a.md', 25)]).matched, 1);
+  assert.equal(scoreCase('c', gold, [f('src/boot.ts', 89), f('docs/decisions/a.md', 25)], 10, [[0, 0]]).matched, 2);
   // A judge pair can't reuse a point or a finding.
   assert.equal(scoreCase('c', gold, [f('x.ts', 1)], 10, [[0, 0], [1, 0], [5, 0]]).matched, 1);
+});
+
+test('the fallback needs 3 lines, or a shared code name within 10', async () => {
+  const { lineMatch, lensRecall, meanTotals } = await import('../src/replay.ts');
+  const g = { path: 'a.ts', line: 20, text: '`chargeCard` retries twice', source: 'inline' as const };
+  assert.ok(lineMatch(g, { path: 'a.ts', line: 22, body: 'anything' }));
+  assert.ok(!lineMatch(g, { path: 'a.ts', line: 28, body: 'a different problem' }));
+  assert.ok(lineMatch(g, { path: 'a.ts', line: 28, body: 'chargeCard has no idempotency key' }));
+  assert.equal(lensRecall([g], [{ path: 'a.ts', line: 21, body: 'x' }]), 1);
+  assert.deepEqual(meanTotals([{ cases: 5, recall: 0.4, precision: 0.5, nitShare: 0.1 }, { cases: 5, recall: 0.3, precision: 0.4, nitShare: 0.2 }]), { cases: 5, recall: 0.35, precision: 0.45, nitShare: 0.15 });
 });

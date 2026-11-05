@@ -28,7 +28,7 @@ const SOUS: Record<Role, string[]> = {
   reader: ['status', 'noise', 'checkout', 'gate', 'memory', 'facts', 'decisions', 'plan', 'links', 'stagekey', 'stats'],
   writer: ['status', 'noise', 'post', 'mark', 'memory', 'decisions'],
   'reply-judge': ['status', 'checkout', 'reply', 'resolve', 'seen', 'memory', 'facts'],
-  reflector: ['status', 'leak-check', 'score', 'facts', 'memory', 'stats', 'tokens', 'stagekey'],
+  reflector: ['status', 'leak-check', 'score', 'facts', 'memory', 'stats', 'tokens', 'stagekey', 'evalrun'],
   main: [],
 };
 

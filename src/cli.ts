@@ -10,7 +10,7 @@ import { appendLine, meDir, orgDir, readJson, sousHome, writeJson } from './home
 import { buildDenylist, findLeaks } from './leak.ts';
 import { applyCorrections, isDuplicate, missingDecisions, verifyEvidence, type Correction } from './evidence.ts';
 import { buildReview, dismissOwn, hasMarker, LintError, marker, postReview, signed, type Draft } from './post.ts';
-import { commitAt, gateFails, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
+import { commitAt, gateFails, lensRecall, meanTotals, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
 import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
 import { codeLinks, plan } from './plan.ts';
@@ -88,7 +88,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   async init() {
     mkdirSync(meDir(), { recursive: true });
     const path = join(sousHome(), 'config.json');
-    if (!existsSync(path)) saveConfig({ orgs: [], paused: false, maxReviewsPerRun: 3, attribution: 'From the AI reviewer' });
+    if (!existsSync(path)) saveConfig({ orgs: [], paused: false, maxReviewsPerRun: 3, attribution: 'From the AI reviewer', evalBudgetPerDay: 15 });
     await gitInit(meDir());
     print({ home: sousHome() });
     return 0;
@@ -504,32 +504,93 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   },
 
   /** Scores an eval run (one draft per case) against the cases, and gates it against the accepted baseline. */
+  /**
+   * Scores eval runs against their cases. Loops over the cases the run was given (its run.json), so
+   * a case that crashed or wrote no draft scores zero instead of dropping out. Several run folders of
+   * the same cases are averaged before the gate. Reports, per case, how many gold points any lens came
+   * near against how many survived, so lost recall can be traced to the lenses or the verifier.
+   */
   async score(args) {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { label: { type: 'string' }, accept: { type: 'boolean' }, gate: { type: 'boolean' } } });
-    const [org, runDir] = positionals;
-    if (!org || !runDir) throw new Error('usage: sous score <org> <run-dir> [--label <text>] [--gate] [--accept]');
+    const [org, ...runDirs] = positionals;
+    if (!org || runDirs.length === 0) throw new Error('usage: sous score <org> <run-dir> [more run-dirs of the same cases] [--label <text>] [--gate] [--accept]');
     const casesDir = join(orgDir(org), 'replay', 'cases');
-    const scores = readdirSync(runDir)
-      .filter((f) => f.endsWith('.json') && !f.endsWith('.judge.json'))
-      .flatMap((f) => {
-        const id = f.replace(/\.json$/, '');
-        const c = readJson<Case | null>(join(casesDir, f), null);
+    const runs = runDirs.map((runDir) => {
+      const meta = readJson<{ cases?: string[] } & Record<string, unknown>>(join(runDir, 'run.json'), {});
+      // Older runs have no manifest: fall back to the drafts present.
+      const ids = meta.cases ?? readdirSync(runDir).filter((f) => /^[\w-]+\.json$/.test(f) && !/\.(judge|verified)\.json$|^run\.json$/.test(f) && !f.includes('.lens-')).map((f) => f.replace(/\.json$/, ''));
+      const scores = ids.flatMap((id) => {
+        const c = readJson<Case | null>(join(casesDir, `${id}.json`), null);
         if (!c) return [];
-        const draft = readJson<{ findings?: Draft['findings'] }>(join(runDir, f), {});
-        // Pairs from the match judge, when it ran: the same point made in another file or place.
+        const draft = readJson<{ findings?: Draft['findings'] }>(join(runDir, `${id}.json`), {});
         const judge = readJson<{ pairs?: [number, number][] }>(join(runDir, `${id}.judge.json`), {});
-        return [scoreCase(id, c.gold, draft.findings ?? [], 10, judge.pairs ?? [])];
+        const candidates = readdirSync(runDir).filter((f) => f.startsWith(`${id}.lens-`)).flatMap((f) => (readJson<{ candidates?: { path: string; line: number; claim?: string }[] }>(join(runDir, f), {}).candidates ?? []).map((x) => ({ path: x.path, line: x.line, body: x.claim ?? '' })));
+        return [{ ...scoreCase(id, c.gold, draft.findings ?? [], 10, judge.pairs ?? []), missingDraft: !existsSync(join(runDir, `${id}.json`)), nearByLenses: lensRecall(c.gold, candidates) }];
       });
-    if (scores.length === 0) throw new Error(`no drafts in ${runDir} match a case in ${casesDir}`);
-    const now = totals(scores);
+      return { runDir, provenance: meta, totals: totals(scores), scores };
+    });
+    if (runs.every((r) => r.scores.length === 0)) throw new Error(`no cases scored in ${runDirs.join(', ')}`);
+    const now = meanTotals(runs.map((r) => r.totals));
     const log = join(orgDir(org), 'replay', 'scores.jsonl');
     const history = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Totals & { accepted?: boolean }) : [];
     const baseline = [...history].reverse().find((h) => h.accepted) ?? null;
     const fails = gateFails(now, baseline);
     const accepted = Boolean(values.accept) && fails.length === 0;
-    appendLine(log, { at: new Date().toISOString(), label: values.label ?? '', ...now, accepted });
-    print({ ...now, baseline, fails, accepted, perCase: scores });
+    appendLine(log, { at: new Date().toISOString(), label: values.label ?? '', ...now, runs: runs.length, accepted, provenance: runs[0]?.provenance ?? {} });
+    print({ ...now, runs: runs.map((r) => ({ runDir: r.runDir, ...r.totals })), baseline, fails, accepted, perCase: runs.flatMap((r) => r.scores) });
     return values.gate && fails.length ? 1 : 0;
+  },
+
+  /**
+   * Starts an eval: one run folder per repeat, each with run.json (the cases, the engine commit, a
+   * hash of the prompts and agents, the memory commit). Refuses when the day's eval budget is spent.
+   */
+  async evalrun(args) {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { cases: { type: 'string' }, repeat: { type: 'string' } } });
+    const [org, label] = positionals;
+    if (!org || !label || !values.cases) throw new Error('usage: sous evalrun <org> <label> --cases a,b,c [--repeat 3]');
+    const cases = values.cases.split(',').filter(Boolean);
+    const repeat = Number(values.repeat ?? 3);
+    const config = loadConfig();
+    const today = new Date().toISOString().slice(0, 10);
+    const log = join(orgDir(org), 'events.jsonl');
+    const usedToday = (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []).map((l) => JSON.parse(l) as { at: string; type: string; caseRuns?: number }).filter((e) => e.type === 'eval-started' && e.at.startsWith(today)).reduce((n, e) => n + (e.caseRuns ?? 0), 0);
+    const want = cases.length * repeat;
+    if (usedToday + want > config.evalBudgetPerDay) throw new Error(`eval budget: ${usedToday} of ${config.evalBudgetPerDay} case-runs used today; this needs ${want}. Raise evalBudgetPerDay in config.json or wait until tomorrow.`);
+    const here = join(import.meta.dirname, '..');
+    const engine = (await run('git', ['rev-parse', 'HEAD'], { cwd: here })).stdout.trim();
+    const prompts = createHash('sha256');
+    for (const d of ['prompts/lenses', '.claude/agents', '.claude/commands']) for (const f of readdirSync(join(here, d)).sort()) prompts.update(readFileSync(join(here, d, f)));
+    const memory = (await run('git', ['rev-parse', 'HEAD'], { cwd: orgDir(org) }).catch(() => ({ stdout: 'none' }))).stdout.trim();
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
+    const dirs = Array.from({ length: repeat }, (_, i) => join(orgDir(org), 'replay', 'runs', `${stamp}-${label.replace(/[^\w-]/g, '-')}-r${i + 1}`));
+    for (const [i, dir] of dirs.entries()) {
+      mkdirSync(dir, { recursive: true });
+      writeJson(join(dir, 'run.json'), { org, label, cases, repeat: i + 1, of: repeat, engine, prompts: prompts.copy().digest('hex').slice(0, 16), memory, started: new Date().toISOString() });
+    }
+    logEvent(org, 'eval-started', { label, caseRuns: want, dirs });
+    print({ dirs, caseRuns: want, budgetLeftToday: config.evalBudgetPerDay - usedToday - want });
+    return 0;
+  },
+
+  /**
+   * Turns a benchmark file you supply (public PRs with their golden comments) into replay cases in a
+   * separate `bench` org, so Sous's general bug-finding can be checked beside its fit to you.
+   * Input: [{ repo, number, head, base, comments: [{ path, line, body }] }].
+   */
+  async bench(args) {
+    const [sub, file] = args;
+    if (sub !== 'import' || !file) throw new Error('usage: sous bench import <benchmark.json>');
+    const items = JSON.parse(readFileSync(file, 'utf8')) as { repo: string; number: number; head: string; base: string; comments: { path: string; line: number; body: string }[] }[];
+    const dir = join(orgDir('bench'), 'replay', 'cases');
+    mkdirSync(dir, { recursive: true });
+    for (const it of items) {
+      const id = `${it.repo.split('/')[1]}-${it.number}-${it.head.slice(0, 12)}`;
+      const c: Case = { id, org: 'bench', repo: it.repo, number: it.number, head: it.head, base: it.base, me: '', before: new Date().toISOString(), gold: it.comments.map((g) => ({ path: g.path, line: g.line, text: g.body.slice(0, 500), source: 'inline' })) };
+      writeJson(join(dir, `${id}.json`), c);
+    }
+    print({ cases: items.length, dir });
+    return 0;
   },
 
   /**
