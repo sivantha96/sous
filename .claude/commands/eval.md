@@ -11,7 +11,8 @@ Arguments: $ARGUMENTS (org, then an optional sample size, default all, then an o
    - Run `gatherer` in **replay mode**: it reads only comments created before the case's `before` time, and never any comment by the case's `me` account (those are the answers). It skips CI and knowledge-graph lookups for later commits.
    - Run the `lens` subagents, then the `verifier`.
    - Run the `writer` in **dry mode**: it writes the draft to `<run folder>/<case id>.json` and never runs `sous post`, `sous mark` or anything that touches GitHub.
-4. Run `./bin/sous score <org> <run folder> --label "<label>"` and report recall, precision, the nit share, the baseline and any case that scored zero.
-5. When Sivantha says the run is a fair baseline, run `./bin/sous score <org> <run folder> --label "<label>" --accept`.
+4. For each case, run the `match-judge` subagent on the case file and its draft, writing `<run folder>/<case id>.judge.json`.
+5. Run `./bin/sous score <org> <run folder> --label "<label>"` and report recall, precision, the nit share, the baseline and any case that scored zero.
+6. When Sivantha says the run is a fair baseline, run `./bin/sous score <org> <run folder> --label "<label>" --accept`.
 
-Scoring matches a finding to a gold point on the same file within 10 lines. It can't tell whether the finding says the same thing, so read the zero-score cases before trusting a drop.
+Scoring takes the judge's pairs first, then any finding on the same file (folders optional) within 10 lines. Changing the judge or the matcher changes the numbers, so re-score the baseline run with the new matcher and accept it before comparing.

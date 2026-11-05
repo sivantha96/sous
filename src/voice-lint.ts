@@ -7,6 +7,8 @@ export interface Finding {
   body: string;
   /** Only when the author needs a specific fix, or there is one solid solution. Otherwise name the issue and let them solve it. */
   fix?: string;
+  /** A choice only the reviewer can make. Kept in eval drafts so it counts; never posted. */
+  owner?: boolean;
 }
 
 // Words Sivantha never uses, and phrases that read like a bot.

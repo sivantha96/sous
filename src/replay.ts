@@ -48,13 +48,28 @@ export interface CaseScore {
   nits: number;
 }
 
-/** A finding matches a gold point on the same file within `window` lines; each gold point matches once. */
-export function scoreCase(id: string, gold: Gold[], findings: Finding[], window = 10): CaseScore {
+/** Same file, allowing one side to be written without its folders (`a.md` and `docs/x/a.md`). */
+export const samePath = (a: string, b: string): boolean => a === b || a.endsWith(`/${b}`) || b.endsWith(`/${a}`);
+
+/**
+ * Each gold point matches at most one finding. First the judge's pairs (gold index, finding index):
+ * the same point made anywhere. Then a finding on the same file within `window` lines.
+ */
+export function scoreCase(id: string, gold: Gold[], findings: Finding[], window = 10, judged: [number, number][] = []): CaseScore {
   const free = gold.map((g) => ({ ...g, used: false }));
+  const usedFindings = new Set<number>();
   let matched = 0;
-  for (const f of findings) {
+  for (const [gi, fi] of judged) {
+    const g = free[gi];
+    if (!g || g.used || fi < 0 || fi >= findings.length || usedFindings.has(fi)) continue;
+    g.used = true;
+    usedFindings.add(fi);
+    matched++;
+  }
+  for (const [fi, f] of findings.entries()) {
+    if (usedFindings.has(fi)) continue;
     const hit = free
-      .filter((g) => !g.used && g.path === f.path && Math.abs(g.line - f.line) <= window)
+      .filter((g) => !g.used && samePath(g.path, f.path) && Math.abs(g.line - f.line) <= window)
       .sort((a, b) => Math.abs(a.line - f.line) - Math.abs(b.line - f.line))[0];
     if (hit) {
       hit.used = true;

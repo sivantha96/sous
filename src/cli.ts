@@ -8,7 +8,7 @@ import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
 import { get, getAll, ghFor, whoami } from './gh.ts';
 import { appendLine, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
 import { buildDenylist, findLeaks } from './leak.ts';
-import { buildReview, dismissOwn, hasMarker, LintError, marker, postReview, type Draft } from './post.ts';
+import { buildReview, dismissOwn, hasMarker, LintError, postReview, signed, type Draft } from './post.ts';
 import { commitAt, gateFails, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
 import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
@@ -234,7 +234,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
     if (isPaused(config, org)) throw new Error(`${org} is paused; not replying`);
     const gh = await ghFor(profile.ghAccount);
-    const body = `${text}\n\n_${config.attribution}_\n\n${marker(pr.head)}`;
+    const body = signed(text, config.attribution, pr.head);
     const posted = JSON.parse(await gh(['api', '-X', 'POST', `repos/${repo}/pulls/${n}/comments/${id}/replies`, '--input', '-'], JSON.stringify({ body }))) as { id: number };
     pr.replyIds.push(posted.id);
     saveState(org, state);
@@ -395,13 +395,15 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (!org || !runDir) throw new Error('usage: sous score <org> <run-dir> [--label <text>] [--gate] [--accept]');
     const casesDir = join(orgDir(org), 'replay', 'cases');
     const scores = readdirSync(runDir)
-      .filter((f) => f.endsWith('.json'))
+      .filter((f) => f.endsWith('.json') && !f.endsWith('.judge.json'))
       .flatMap((f) => {
         const id = f.replace(/\.json$/, '');
         const c = readJson<Case | null>(join(casesDir, f), null);
         if (!c) return [];
         const draft = readJson<{ findings?: Draft['findings'] }>(join(runDir, f), {});
-        return [scoreCase(id, c.gold, draft.findings ?? [])];
+        // Pairs from the match judge, when it ran: the same point made in another file or place.
+        const judge = readJson<{ pairs?: [number, number][] }>(join(runDir, `${id}.judge.json`), {});
+        return [scoreCase(id, c.gold, draft.findings ?? [], 10, judge.pairs ?? [])];
       });
     if (scores.length === 0) throw new Error(`no drafts in ${runDir} match a case in ${casesDir}`);
     const now = totals(scores);
