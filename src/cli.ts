@@ -2,7 +2,8 @@ import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
-import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config } from './config.ts';
+import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config, type Profile } from './config.ts';
+import { checkOutbound, ensureCanaries, otherOrgTerms } from './outbound.ts';
 import { findDue, patchId } from './due.ts';
 import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
 import { get, getAll, ghFor, send, whoami } from './gh.ts';
@@ -23,6 +24,16 @@ import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts
 import { emptyPr, loadState, logEvent, prKey, saveState } from './state.ts';
 
 const run = promisify(execFile);
+
+/** Refuses any text bound for GitHub that fails the outbound check (outbound.ts). */
+function guardOutbound(org: string, profile: Profile, key: string, texts: string[]): void {
+  ensureCanaries();
+  const rules = { org, otherOrgTerms: otherOrgTerms(org), linkHosts: profile.linkHosts };
+  const problems = texts.flatMap((t, i) => checkOutbound(t, rules).map((p) => (texts.length > 1 ? `comment ${i + 1}: ${p}` : p)));
+  if (problems.length === 0) return;
+  logEvent(org, 'outbound-refused', { pr: key, problems });
+  throw new LintError(problems);
+}
 const print = (v: unknown): void => console.log(JSON.stringify(v, null, 2));
 const sleep = (s: number) => new Promise((r) => setTimeout(r, s * 1000));
 
@@ -88,7 +99,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   async init() {
     mkdirSync(meDir(), { recursive: true });
     const path = join(sousHome(), 'config.json');
-    if (!existsSync(path)) saveConfig({ orgs: [], paused: false, maxReviewsPerRun: 3, attribution: 'From the AI reviewer', evalBudgetPerDay: 15 });
+    if (!existsSync(path)) saveConfig({ orgs: [], paused: false, maxReviewsPerRun: 3, attribution: 'From the AI reviewer', evalBudgetPerDay: 15, maxCommentsPerReview: 10 });
     await gitInit(meDir());
     print({ home: sousHome() });
     return 0;
@@ -120,7 +131,9 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       knowledgeGraph: existing?.knowledgeGraph ?? null,
       ruleSources: existing?.ruleSources ?? [],
       postSuggestions: existing?.postSuggestions ?? false,
+      linkHosts: existing?.linkHosts ?? [],
     });
+    ensureCanaries();
     await refreshDenylist(org, account);
     await baseline(org, account);
     const config = loadConfig();
@@ -244,7 +257,11 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
 
     const files = await getAll<{ filename: string; patch?: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/files?per_page=100`);
-    const pull = await get<{ base: { ref: string } }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
+    const pull = await get<{ base: { ref: string }; state: string; requested_reviewers: { login: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
+    // The recipient is fixed by code, never by the draft: a watched org, an open PR, and one Sous was asked to review or already reviewed.
+    if (!config.orgs.includes(draft.org) || !draft.repo.toLowerCase().startsWith(`${draft.org.toLowerCase()}/`)) throw new Error(`${draft.repo} is not in a watched org; not posting`);
+    if (pull.state !== 'open') throw new Error(`${key} is ${pull.state}; not posting`);
+    if (!state.prs[key] && !pull.requested_reviewers.some((u) => u.login === me)) throw new Error(`${key} never asked for your review; not posting`);
     const clone = join(sousHome(), 'cache', draft.repo);
     if (!existsSync(clone)) throw new Error(`no clone at ${clone}; run sous checkout first`);
     const git = (...a: string[]): string | null => {
@@ -282,6 +299,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const dropped = checked.findings.length - keep.length;
     if (dropped) logEvent(draft.org, 'dropped', { pr: key, failing: [...failing], duplicates: dropped - failing.size });
     if (keep.length === 0) throw new Error('nothing left to post after checks; record the head with sous mark --verified');
+    if (keep.length > config.maxCommentsPerReview) throw new LintError([`${keep.length} comments; at most ${config.maxCommentsPerReview} per review. Keep the most severe and drop the rest`]);
 
     let payload;
     try {
@@ -290,6 +308,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       if (e instanceof LintError) logEvent(draft.org, 'lint-refused', { pr: key, problems: e.problems });
       throw e;
     }
+    guardOutbound(draft.org, profile, key, payload.comments.map((c) => c.body));
     const requested = async () => (await get<{ users: { login: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`)).users.map((u) => u.login);
     const wasRequested = (await requested()).includes(me);
     const { reviewId, commentIds } = await postReview(gh, { ...draft, findings: keep }, payload);
@@ -348,6 +367,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       throw new LintError(problems);
     }
     if (isPaused(config, org)) throw new Error(`${org} is paused; not replying`);
+    guardOutbound(org, profile, key, [text]);
     const gh = await ghFor(profile.ghAccount);
     const body = signed(text, config.attribution, pr.head);
     const posted = JSON.parse(await gh(['api', '-X', 'POST', `repos/${repo}/pulls/${n}/comments/${id}/replies`, '--input', '-'], JSON.stringify({ body }))) as { id: number };
@@ -425,6 +445,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (!org || !repo || !n || !id || message.length === 0) throw new Error('usage: sous dismiss <org> <owner/repo> <number> <review-id> <message>');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
+    guardOutbound(org, profile, prKey(repo, Number(n)), [message.join(' ')]);
     const own = loadState(org).prs[prKey(repo, Number(n))]?.reviewIds ?? [];
     await dismissOwn(gh, repo, Number(n), Number(id), await whoami(gh), own, message.join(' '));
     logEvent(org, 'dismissed', { pr: prKey(repo, Number(n)), reviewId: Number(id) });

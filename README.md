@@ -69,6 +69,8 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 - Paused orgs and orgs in draft mode get pending reviews.
 - Dismisses only its own reviews: posted by your account, carrying the Sous marker, and recorded in state.
 - Text that fails the voice lint is never posted.
+- Every comment, reply and dismissal passes `src/outbound.ts` first. Any of these is refused: a name from another watched org, the canary line `sous` keeps at the top of every memory file, a link outside `github.com/<org>/` and the profile's `linkHosts`, or a link with a query string.
+- `sous post` posts only to an open PR in a watched org that asked for your review or that Sous reviewed before. It posts at most `maxCommentsPerReview` comments (default 10).
 - `.claude/settings.json` blocks agents from writing to GitHub except through `sous`.
 
 `pnpm check` runs the typecheck and tests.
