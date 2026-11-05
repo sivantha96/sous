@@ -1,6 +1,8 @@
 import { realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, relative, resolve } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { dirname, relative, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { sousHome } from './home.ts';
 import { parseCommandLine, validateStage } from './vendor/shell-policy.ts';
 
 /**
@@ -37,6 +39,19 @@ const NETWORK = new Set(['curl', 'wget', 'nc', 'ncat', 'netcat', 'ssh', 'scp', '
 
 /** Paths no agent may read: credentials and env files. Matched on the path and on where a symlink points. */
 const SENSITIVE = /(^|\/)(\.ssh|\.aws|\.gnupg|\.docker|\.kube|\.netrc|\.npmrc|\.pypirc|\.config\/gh|\.config\/doppler|\.doppler|Library\/Keychains)(\/|$)|(^|\/)\.env(\.(?!example$)[\w.-]+)?$/;
+
+/** Commands that print a credential. Refused for every role, the main session included. */
+const CREDENTIAL_PRINTERS: ((argv: string[]) => boolean)[] = [
+  (a) => a[0] === 'printenv' || (['env', 'export', 'set', 'declare'].includes(a[0]!) && a.length === 1),
+  (a) => a[0] === 'gh' && a[1] === 'auth' && (a[2] === 'token' || a.some((x) => x === '-t' || x === '--show-token')),
+  (a) => a[0] === 'security' && /^find-.*password$/.test(a[1] ?? ''),
+  (a) => a[0] === 'doppler' && ['secrets', 'run', 'configs'].includes(a[1] ?? ''),
+];
+const CREDENTIAL_RE = /(^|[\s;&|(`$])(printenv|(env|export|set|declare)\s*($|[;&|])|gh\s+auth\s+token|security\s+find-\S*password|doppler\s+(secrets|run))\b|--show-token\b/;
+
+/** The engine's own guard rails: no agent edits them, so no PR text can talk one into loosening them. */
+const ENGINE_ROOT = realpathSync(resolve(dirname(fileURLToPath(import.meta.url)), '..'));
+const PROTECTED = /^(src\/(guard|outbound|published|post)\.ts|src\/vendor\/.*|bin\/sous-guard|\.claude\/settings(\.local)?\.json)$/;
 
 const GIT_READ = new Set(['show', 'diff', 'log', 'ls-files', 'ls-tree', 'merge-base', 'rev-parse', 'cat-file', 'grep', 'blame', 'status', 'rev-list', 'patch-id', 'describe', 'shortlog', 'name-rev']);
 /** Git options that run programs or write files even under a read subcommand. */
@@ -99,6 +114,7 @@ function checkGit(argv: string[], role: Role): Verdict {
 function checkGh(argv: string[], role: Role): Verdict {
   const [, group, sub] = argv;
   const allowed = group ? GH_READ[group] : undefined;
+  if (argv.some((a) => a.includes('://') || /^--hostname(=|$)/.test(a))) return no('gh may only talk to github.com');
   if (group === 'api') {
     const writes = argv.some((a, i) => /^(-f|-F|--field|--raw-field|--input)(=|$)/.test(a) || ((a === '-X' || a === '--method') && argv[i + 1]?.toUpperCase() !== 'GET') || /^--method=(?!GET$)/i.test(a));
     if (writes) return no('gh api may only read (GET); Sous writes to GitHub only through sous commands');
@@ -120,12 +136,16 @@ export function checkCommand(command: string, role: Role, cwd: string): Verdict 
   const parsed = parseCommandLine(command);
   if (!parsed.ok) {
     // The main session may use full shell syntax; it only loses network tools.
-    if (role === 'main') return NETWORK_RE.test(command) ? no('network tools are not allowed') : { ok: true };
+    if (role === 'main') {
+      if (NETWORK_RE.test(command)) return no('network tools are not allowed');
+      return CREDENTIAL_RE.test(command) ? no('commands that print credentials are not allowed') : { ok: true };
+    }
     return no(parsed.reason);
   }
   for (const argv of parsed.parsed.stages) {
     const name = argv[0]!.split('/').pop()!;
     if (NETWORK.has(name)) return no(`${name} is not allowed: Sous agents never send data off the machine`);
+    if (CREDENTIAL_PRINTERS.some((f) => f([name, ...argv.slice(1)]))) return no('commands that print credentials are not allowed; only sous itself holds the token');
     if (role === 'main') continue;
     for (const token of argv.slice(1)) {
       const v = checkPathToken(token, cwd);
@@ -151,9 +171,31 @@ export function checkPath(path: string | undefined, role: Role, cwd: string): Ve
   return checkPathToken(path, cwd);
 }
 
+const inside = (path: string, dir: string): boolean => path === dir || path.startsWith(dir.endsWith(sep) ? dir : dir + sep);
+
+/**
+ * Write, Edit and NotebookEdit. Every role: no credentials or env files, nothing inside a `.git`
+ * folder (hooks there run outside any check), and none of the engine's guard files; the main
+ * session may edit those only when the person started it with SOUS_ENGINE_EDIT=1. Subagents
+ * write only under ~/.sous and the temp folder; the reflector also in this repo.
+ */
+export function checkWrite(path: string | undefined, role: Role, cwd: string, env: NodeJS.ProcessEnv = process.env): Verdict {
+  if (!path) return no('no path to write');
+  const abs = realOf(resolve(cwd, path.startsWith('~') ? `${homedir()}${path.slice(1)}` : path));
+  const v = checkPathToken(abs, cwd);
+  if (!v.ok) return v;
+  if (abs.split(sep).includes('.git')) return no('writing inside a .git folder is not allowed');
+  if (inside(abs, ENGINE_ROOT) && PROTECTED.test(relative(ENGINE_ROOT, abs).split(sep).join('/')) && !(role === 'main' && env.SOUS_ENGINE_EDIT === '1')) {
+    return no(`${relative(ENGINE_ROOT, abs)} is one of Sous's own guard rails; edit it in a session started with SOUS_ENGINE_EDIT=1`);
+  }
+  if (role === 'main') return { ok: true };
+  const allowed = [realOf(sousHome()), realOf(tmpdir()), ...(role === 'reflector' ? [ENGINE_ROOT] : [])];
+  return allowed.some((d) => inside(abs, d)) ? { ok: true } : no(`subagents write only under ~/.sous and the temp folder${role === 'reflector' ? ' and the Sous repo' : ''}`);
+}
+
 export interface HookInput {
   tool_name: string;
-  tool_input: { command?: string; file_path?: string; path?: string; pattern?: string };
+  tool_input: { command?: string; file_path?: string; notebook_path?: string; path?: string; pattern?: string };
   agent_type?: string;
   cwd?: string;
 }
@@ -163,5 +205,6 @@ export function decide(input: HookInput): Verdict {
   const cwd = input.cwd ?? process.cwd();
   if (input.tool_name === 'Bash') return checkCommand(input.tool_input.command ?? '', role, cwd);
   if (['Read', 'Grep', 'Glob'].includes(input.tool_name)) return checkPath(input.tool_input.file_path ?? input.tool_input.path, role, cwd);
+  if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(input.tool_name)) return checkWrite(input.tool_input.file_path ?? input.tool_input.notebook_path, role, cwd);
   return { ok: true };
 }

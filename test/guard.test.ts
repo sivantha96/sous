@@ -71,3 +71,66 @@ test('sparse patterns keep AI-config paths out at any depth', async () => {
   for (const x of ['!/.claude', '!/**/.claude', '!/.mcp.json', '!/**/CLAUDE.md']) assert.ok(p.includes(x), x);
   assert.ok(isNoise('apps/web/pnpm-lock.yaml') && isNoise('x/dist/a.js') && !isNoise('src/a.ts'));
 });
+
+test('nobody prints credentials, the main session included', () => {
+  for (const role of ['reader', 'writer', 'reflector', 'main'] as const) {
+    for (const cmd of ['gh auth token', 'gh auth token --user me', 'gh auth status --show-token', 'printenv', 'env', 'printenv GH_TOKEN', 'security find-generic-password -s gh']) {
+      assert.ok(!checkCommand(cmd, role, '/tmp').ok, `${role}: ${cmd}`);
+    }
+  }
+  assert.ok(!checkCommand('echo hi; printenv | head', 'main', '/tmp').ok, 'shell syntax the parser rejects still hits the regex');
+  assert.ok(checkCommand('set -euo pipefail; pnpm check', 'main', '/tmp').ok);
+  assert.ok(checkCommand('gh auth status', 'main', '/tmp').ok);
+});
+
+test('gh talks only to github.com', () => {
+  assert.ok(!ok('gh api https://evil.example/x'));
+  assert.ok(!ok('gh api --hostname evil.example repos/o/r'));
+  assert.ok(ok('gh api repos/o/r/pulls'));
+});
+
+test('options that run a program or write a file are refused even on allowed tools', () => {
+  for (const cmd of [
+    'rg --pre ./x foo',
+    'find . -exec id ;',
+    'find . -execdir id ;',
+    'find . -delete',
+    'find . -fprint /tmp/x',
+    'find . -ok id ;',
+    "sed -e '1e id' a",
+    "sed -i s/a/b/ f",
+    "awk 'BEGIN{system(\"id\")}'",
+    'xargs id',
+    'sort --compress-program=sh a',
+    'sort -o out a',
+    'tee out',
+    'less a',
+    'git grep -O id foo',
+    'git log --ext-diff',
+    'git -c core.sshCommand=id fetch',
+    'git fetch --upload-pack=id',
+    'git diff --output=/tmp/x',
+    'diff --to-file=x a',
+  ]) {
+    assert.ok(!ok(cmd), cmd);
+  }
+});
+
+test('writes: credentials, .git, guard files and paths outside ~/.sous are refused', async () => {
+  const { checkWrite } = await import('../src/guard.ts');
+  const root = join(import.meta.dirname, '..');
+  const home = process.env.SOUS_HOME ?? join(homedir(), '.sous');
+  assert.equal(checkWrite(join(home, 'orgs', 'o', 'drafts', 'x.json'), 'writer', '/tmp').ok, true);
+  assert.equal(checkWrite(join(tmpdir(), 'scratch.json'), 'lens', '/tmp').ok, true);
+  assert.equal(checkWrite(join(homedir(), 'notes.md'), 'writer', '/tmp').ok, false);
+  assert.equal(checkWrite(join(home, 'orgs', 'o', '.git', 'hooks', 'post-commit'), 'reflector', '/tmp').ok, false);
+  assert.equal(checkWrite(join(root, 'src', 'plan.ts'), 'reflector', '/tmp').ok, true);
+  assert.equal(checkWrite(join(root, 'src', 'plan.ts'), 'writer', '/tmp').ok, false);
+  for (const f of ['src/guard.ts', 'src/vendor/shell-policy.ts', 'bin/sous-guard', '.claude/settings.json', 'src/outbound.ts']) {
+    assert.equal(checkWrite(join(root, f), 'reflector', '/tmp').ok, false, f);
+    assert.equal(checkWrite(join(root, f), 'main', '/tmp', {}).ok, false, `main: ${f}`);
+    assert.equal(checkWrite(join(root, f), 'main', '/tmp', { SOUS_ENGINE_EDIT: '1' }).ok, true, `main with the switch: ${f}`);
+  }
+  assert.equal(checkWrite(join(root, '.env'), 'main', '/tmp').ok, false);
+  assert.equal(decide({ tool_name: 'Edit', tool_input: { file_path: join(root, 'src', 'guard.ts') }, agent_type: 'reflector' }).ok, false);
+});

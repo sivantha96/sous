@@ -77,7 +77,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 
 ## The guard
 
-`bin/sous-guard` is a PreToolUse hook (`.claude/settings.json`) on every Bash, Read, Grep and Glob call, in the main session and in every subagent. Claude Code tells it which subagent is calling (`agent_type`), and `src/guard.ts` applies that role's policy:
+`bin/sous-guard` is a PreToolUse hook (`.claude/settings.json`) on every Bash, Read, Grep, Glob, Write, Edit and NotebookEdit call, in the main session and in every subagent. Claude Code tells it which subagent is calling (`agent_type`), and `src/guard.ts` applies that role's policy:
 
 | Role | Subagents | May run |
 |---|---|---|
@@ -85,6 +85,42 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | writer | writer | the same, plus `sous post` and `sous mark` |
 | reply-judge | reply-judge | the same, plus `sous reply`, `resolve` and `seen` |
 | reflector | reflector | the same, plus git commits and pushes (never forced), `gh pr create`, `pnpm check` |
-| main | the orchestrating session | anything but network tools |
+| main | the orchestrating session | anything but network tools and commands that print credentials |
 
-No role may use `curl`, `wget`, `ssh` or other network tools, or read credentials and env files (`.env.example` excepted), including through a symlink. `src/vendor/shell-policy.ts` is copied from vercel-labs/knowledge-agent-template under MIT; its notice is in the file.
+No role may use `curl`, `wget`, `ssh` or other network tools, print a credential (`gh auth token`, `printenv`, a bare `env`, keychain and Doppler reads), point `gh` at a host other than github.com, or read credentials and env files (`.env.example` excepted), including through a symlink.
+
+Writes (`checkWrite`):
+- No role writes a credential or env file, or anything inside a `.git` folder.
+- No role writes Sous's own guard rails: `src/guard.ts`, `src/outbound.ts`, `src/published.ts`, `src/post.ts`, `src/vendor/`, `bin/sous-guard` and `.claude/settings*.json`. The main session may, but only when you start it with `SOUS_ENGINE_EDIT=1`.
+- Subagents write only under `~/.sous` and the temp folder. The reflector may also write in this repo. `src/vendor/shell-policy.ts` is copied from vercel-labs/knowledge-agent-template under MIT; its notice is in the file.
+
+## The sandbox
+
+The guard checks commands by name, so `node -e "fetch(…)"` from the main session would get past it. `.claude/settings.json` therefore also turns on Claude Code's sandbox:
+- **Writes:** only to `~/.sous`, the working folder and the temp folder.
+- **Reads:** never from `~/.ssh`, `~/.aws`, `~/.config/gh`, Doppler's files, `.netrc` or `.npmrc`.
+- **Network:** only github.com, api.github.com and codeload.github.com.
+- **Environment:** `GH_TOKEN` and `GITHUB_TOKEN` are withheld.
+
+`./bin/sous` and `gh` run outside the sandbox (`excludedCommands`): they are the only programs that hold the token. The guard limits `gh` to reads and github.com.
+
+Claude Code ignores a folder's project settings until the folder is trusted. Open Claude Code in this folder once and accept the trust prompt, then check the sandbox with this headless run:
+
+```bash
+printf '%s\n' "Run each command in its own Bash call and print its output: 1) node -e \"fetch('https://example.com').then(r=>console.log(r.status)).catch(e=>console.log('BLOCKED'))\" 2) gh api user -q .login 3) touch ~/sandbox-probe.txt" | claude -p --model haiku --permission-mode dontAsk --allowedTools Bash
+```
+
+Expected: 1 prints `BLOCKED`, 2 prints your login, and 3 fails with "Operation not permitted".
+
+## Who holds what
+
+A subagent that reads text a stranger wrote, holds private data and can send something out has all three traits an injection needs. Those subagents get the tightest checks.
+
+| Subagent | Reads stranger-written text | Holds private data | Can send out | Checks on what it sends |
+|---|---|---|---|---|
+| gatherer, lens, verifier | PR code, title and body, comments | org memory | no | |
+| signal-collector | replies and reactions | state | no | |
+| match-judge | past review comments | eval cases | no | |
+| writer | only through findings | voice and examples | `sous post` | voice lint, evidence quotes, `outbound.ts`, a fixed recipient, a comment cap |
+| reply-judge | teammate replies | org memory | `sous reply`, `resolve` | voice lint, `outbound.ts`, only its own threads |
+| reflector | through events and questions | all memory | git pushes and PRs to this repo | `sous leak-check`, the protected guard files, never merges |
