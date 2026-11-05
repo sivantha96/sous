@@ -1,20 +1,42 @@
-import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { execFile, execFileSync } from 'node:child_process';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
-import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config } from './config.ts';
-import { findDue } from './due.ts';
+import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config, type Profile } from './config.ts';
+import { checkOutbound, ensureCanaries, otherOrgTerms } from './outbound.ts';
+import { hiddenInDiff, stripHidden } from './hidden.ts';
+import { CODEOWNERS_PATHS, parseCodeowners, unownedChanges } from './owners.ts';
+import { findSkill } from './skills.ts';
+import { findDue, patchId } from './due.ts';
 import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
-import { get, getAll, ghFor, whoami } from './gh.ts';
+import { get, getAll, ghFor, send, whoami } from './gh.ts';
 import { appendLine, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
 import { buildDenylist, findLeaks } from './leak.ts';
-import { buildReview, dismissOwn, hasMarker, LintError, postReview, signed, type Draft } from './post.ts';
-import { commitAt, gateFails, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
+import { applyCorrections, isDuplicate, missingDecisions, verifyEvidence, type Correction } from './evidence.ts';
+import { buildReview, dismissOwn, hasMarker, LintError, marker, postReview, signed, type Draft } from './post.ts';
+import { commitAt, gateFails, lensRecall, meanTotals, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
 import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
+import { codeLinks, plan } from './plan.ts';
+import { mergeUsage, usageByModel, type Usage } from './usage.ts';
+import { createHash } from 'node:crypto';
+import { statSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { diffTerms, factState, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
+import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
 import { emptyPr, loadState, logEvent, prKey, saveState } from './state.ts';
 
 const run = promisify(execFile);
+
+/** Refuses any text bound for GitHub that fails the outbound check (outbound.ts). */
+function guardOutbound(org: string, profile: Profile, key: string, texts: string[]): void {
+  ensureCanaries();
+  const rules = { org, otherOrgTerms: otherOrgTerms(org), linkHosts: profile.linkHosts };
+  const problems = texts.flatMap((t, i) => checkOutbound(t, rules).map((p) => (texts.length > 1 ? `comment ${i + 1}: ${p}` : p)));
+  if (problems.length === 0) return;
+  logEvent(org, 'outbound-refused', { pr: key, problems });
+  throw new LintError(problems);
+}
 const print = (v: unknown): void => console.log(JSON.stringify(v, null, 2));
 const sleep = (s: number) => new Promise((r) => setTimeout(r, s * 1000));
 
@@ -63,11 +85,24 @@ async function baseline(org: string, account: string): Promise<number> {
   return marked;
 }
 
+/** Every memory bullet for an org: its rules, system facts and candidates, then the lead's own habits. */
+function memoryBullets(org: string): Bullet[] {
+  const out: Bullet[] = [];
+  for (const [label, dir] of [['org', orgDir(org)], ['me', meDir()]] as const) {
+    for (const sub of label === 'org' ? ['rules', 'system', 'candidates'] : ['.']) {
+      const d = join(dir, sub);
+      if (!existsSync(d)) continue;
+      for (const f of readdirSync(d).filter((x) => x.endsWith('.md'))) out.push(...parseBullets(`${label === 'me' ? 'me' : sub}/${f}`, readFileSync(join(d, f), 'utf8')));
+    }
+  }
+  return out;
+}
+
 const commands: Record<string, (args: string[]) => Promise<number>> = {
   async init() {
     mkdirSync(meDir(), { recursive: true });
     const path = join(sousHome(), 'config.json');
-    if (!existsSync(path)) saveConfig({ orgs: [], paused: false, maxReviewsPerRun: 3, attribution: 'From the AI reviewer' });
+    if (!existsSync(path)) saveConfig({ orgs: [], paused: false, maxReviewsPerRun: 3, attribution: 'From the AI reviewer', evalBudgetPerDay: 15, maxCommentsPerReview: 10 });
     await gitInit(meDir());
     print({ home: sousHome() });
     return 0;
@@ -98,7 +133,11 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       coderabbit: coderabbit ? { login: 'coderabbitai[bot]', checkName: 'CodeRabbit' } : null,
       knowledgeGraph: existing?.knowledgeGraph ?? null,
       ruleSources: existing?.ruleSources ?? [],
+      postSuggestions: existing?.postSuggestions ?? false,
+      linkHosts: existing?.linkHosts ?? [],
+      skills: existing?.skills ?? [],
     });
+    ensureCanaries();
     await refreshDenylist(org, account);
     await baseline(org, account);
     const config = loadConfig();
@@ -116,10 +155,30 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const out = [];
     for (const org of values.org ? [values.org] : config.orgs) {
       const profile = loadProfile(org);
-      const gh = await ghFor(profile.ghAccount);
-      const me = await whoami(gh);
-      const { due, skipped } = await findDue(gh, profile, loadState(org), me, started);
+      // Preflight: an org whose gh account can't sign in is blocked for this run, never guessed at.
+      let gh: Awaited<ReturnType<typeof ghFor>>;
+      let me: string;
+      try {
+        gh = await ghFor(profile.ghAccount);
+        me = await whoami(gh);
+      } catch (e) {
+        const why = `gh account ${profile.ghAccount} is not signed in: ${(e as Error).message.slice(0, 200)}`;
+        logEvent(org, 'blocked', { why });
+        out.push({ org, blocked: why, paused: isPaused(config, org), postingMode: profile.postingMode, due: [], skipped: [] });
+        continue;
+      }
+      const { due, skipped, rebased } = await findDue(gh, profile, loadState(org), me, started);
       for (const s of skipped) logEvent(org, 'skipped', s);
+      // A rebase that changes nothing: record the new head, no review needed.
+      if (rebased.length) {
+        const state = loadState(org);
+        for (const r of rebased) {
+          const pr = state.prs[r.pr];
+          if (pr) state.prs[r.pr] = { ...pr, head: r.head };
+          logEvent(org, 'rebase-skip', r);
+        }
+        saveState(org, state);
+      }
       for (const d of due.filter((d) => d.gate.action === 'defer')) logEvent(org, 'deferred', { pr: prKey(d.repo, d.number), head: d.head });
       out.push({ org, paused: isPaused(config, org), postingMode: profile.postingMode, due, skipped });
     }
@@ -165,55 +224,225 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
     await run('git', ['fetch', '-q', 'origin', `pull/${n}/head`, `+refs/heads/${base}:refs/remotes/origin/${base}`], { cwd: clone, env });
     const tree = join(clone, '.worktrees', `${n}-${head.slice(0, 12)}`);
-    if (!existsSync(tree)) await run('git', ['worktree', 'add', '-q', '--detach', tree, head], { cwd: clone, env });
-    print({ tree, baseRef: `origin/${base}`, readInstructionsWith: `git -C ${clone} show origin/${base}:<path>` });
+    // A checkout made before AI-config folders were excluded is rebuilt.
+    if (existsSync(tree) && AI_CONFIG.some((p) => existsSync(join(tree, p)))) await run('git', ['worktree', 'remove', '--force', tree], { cwd: clone });
+    if (!existsSync(tree)) {
+      // The PR head's .claude/, .mcp.json and similar never reach an agent's working folder.
+      // Their changes are still reviewed from the diff, and their base copies are read with git show.
+      await run('git', ['worktree', 'add', '-q', '--no-checkout', '--detach', tree, head], { cwd: clone, env });
+      await run('git', ['sparse-checkout', 'set', '--no-cone', ...sparsePatterns()], { cwd: tree });
+      await run('git', ['checkout', '-q', '--detach', head], { cwd: tree });
+    }
+    const { stdout: baseFiles } = await run('git', ['ls-tree', '--name-only', `origin/${base}`], { cwd: clone });
+    const conventions = CONVENTION_FILES.filter((f) => baseFiles.split('\n').includes(f));
+    const { stdout: diff } = await run('git', ['diff', '-U0', '--no-ext-diff', `origin/${base}...${head}`], { cwd: clone, maxBuffer: 256 * 1024 * 1024 });
+    print({ tree, baseRef: `origin/${base}`, readInstructionsWith: `git -C ${clone} show origin/${base}:<path>`, baseConventions: conventions, excludedFromCheckout: AI_CONFIG, hiddenCharacters: hiddenInDiff(diff) });
     return 0;
   },
 
+  /** Changed paths whose CODEOWNERS owners nobody asked to review, read from the base branch. */
+  async owners(args) {
+    const [org, repo, n, base] = args;
+    if (!org || !repo || !n || !base) throw new Error('usage: sous owners <org> <owner/repo> <number> <base>');
+    const gh = await ghFor(loadProfile(org).ghAccount);
+    const clone = join(sousHome(), 'cache', repo);
+    let text = '';
+    let source = '';
+    for (const p of CODEOWNERS_PATHS) {
+      try {
+        text = execFileSync('git', ['show', `origin/${base}:${p}`], { cwd: clone, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        source = p;
+        break;
+      } catch {
+        // Not at this path; GitHub reads the next one.
+      }
+    }
+    if (!source) {
+      print({ codeowners: null, unowned: [] });
+      return 0;
+    }
+    const files = (await getAll<{ filename: string }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).map((f) => f.filename);
+    const req = await get<{ users: { login: string }[]; teams: { slug: string }[] }>(gh, `repos/${repo}/pulls/${n}/requested_reviewers`);
+    const reviewers = (await getAll<{ user: { login: string } | null }>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`)).flatMap((r) => (r.user ? [r.user.login] : []));
+    print({ codeowners: source, unowned: unownedChanges(parseCodeowners(text), files, { users: [...req.users.map((u) => u.login), ...reviewers], teams: req.teams.map((t) => t.slug) }) });
+    return 0;
+  },
+
+  /** The installed convention skills (org profile `skills`) whose paths the PR touches, with their files. */
+  async skills(args) {
+    const [org, repo, n] = args;
+    if (!org || !repo || !n) throw new Error('usage: sous skills <org> <owner/repo> <number>');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const files = (await getAll<{ filename: string }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).map((f) => f.filename);
+    print(profile.skills.filter((s) => scopeMatches(s.paths, files)).map((s) => ({ name: s.name, file: findSkill(s.name) })));
+    return 0;
+  },
+
+  /**
+   * The PR's own words (title, body, reviews, comments) with hidden text removed, for the
+   * gatherer's `.pr-text.md`. Replay passes --before and --exclude so the answers stay out.
+   */
+  async prtext(args) {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { before: { type: 'string' }, exclude: { type: 'string' } } });
+    const [org, repo, n] = positionals;
+    if (!org || !repo || !n) throw new Error('usage: sous prtext <org> <owner/repo> <number> [--before <iso>] [--exclude <login>]');
+    const gh = await ghFor(loadProfile(org).ghAccount);
+    type C = { user: { login: string } | null; body: string | null; created_at?: string; submitted_at?: string; path?: string; line?: number | null };
+    const pull = await get<{ title: string; body: string | null; labels: { name: string }[] }>(gh, `repos/${repo}/pulls/${n}`);
+    const keep = (c: C) => c.user?.login !== values.exclude && (!values.before || (c.created_at ?? c.submitted_at ?? '') < values.before);
+    const sources: [string, C[]][] = [
+      ['Conversation', await getAll<C>(gh, `repos/${repo}/issues/${n}/comments?per_page=100`)],
+      ['Review bodies', (await getAll<C>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`)).filter((r) => r.body)],
+      ['Inline comments', await getAll<C>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`)],
+    ];
+    let removed = 0;
+    const clean = (t: string | null): string => {
+      const r = stripHidden(t ?? '');
+      removed += r.removed;
+      return r.text.trim();
+    };
+    const parts = [`# ${clean(pull.title)}`, `Labels: ${pull.labels.map((l) => l.name).join(', ') || 'none'}`, clean(pull.body) || '(no description)'];
+    for (const [heading, items] of sources) {
+      const shown = items.filter(keep);
+      if (shown.length) parts.push(`## ${heading}`, ...shown.map((c) => `- ${c.user?.login ?? 'ghost'}${c.path ? ` on ${c.path}:${c.line ?? '?'}` : ''}${hasMarker(c.body) ? ' (Sous)' : ''}: ${clean(c.body).replace(/\n/g, '\n  ')}`));
+    }
+    parts.push(`Hidden content removed: ${removed} item(s).`);
+    console.log(parts.join('\n\n'));
+    return 0;
+  },
+
+  /**
+   * The only way a review leaves the machine. Adopts an earlier post on the same head, checks every
+   * finding's quotes against the real files, drops points Sous already made, allows one repair limited
+   * to line, side, path and quote, then posts and gives back a review request the post consumed.
+   */
   async post(args) {
-    const [file] = args;
-    if (!file) throw new Error('usage: sous post <draft.json>');
-    const draft = JSON.parse(readFileSync(file, 'utf8')) as Draft;
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { repair: { type: 'string' } } });
+    const [file] = positionals;
+    if (!file) throw new Error('usage: sous post <draft.json> [--repair <corrections.json>]');
+    const draft = JSON.parse(readFileSync(file, 'utf8')) as Draft & { repaired?: boolean };
     const config = loadConfig();
     const profile = loadProfile(draft.org);
     const pending = isPaused(config, draft.org) || profile.postingMode === 'draft';
     const gh = await ghFor(profile.ghAccount);
+    const me = await whoami(gh);
+    const key = prKey(draft.repo, draft.number);
+    const state = loadState(draft.org);
+    const prev = state.prs[key] ?? emptyPr(draft.head);
+
+    // A post whose response was lost already exists on this head: adopt it instead of posting twice.
+    for (const r of await getAll<{ id: number; user: { login: string } | null; commit_id: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/reviews?per_page=100`)) {
+      if (r.user?.login !== me || r.commit_id !== draft.head || prev.reviewIds.includes(r.id)) continue;
+      const comments = await get<{ id: number; body: string }[]>(gh, `repos/${draft.repo}/pulls/${draft.number}/reviews/${r.id}/comments?per_page=100`);
+      if (!comments.some((c) => c.body.includes(marker(draft.head)))) continue;
+      state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, r.id], commentIds: [...prev.commentIds, ...comments.map((c) => c.id)] };
+      saveState(draft.org, state);
+      logEvent(draft.org, 'adopted', { pr: key, head: draft.head, reviewId: r.id });
+      print({ pr: key, adopted: r.id });
+      return 0;
+    }
+
     const files = await getAll<{ filename: string; patch?: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/files?per_page=100`);
+    const pull = await get<{ base: { ref: string }; state: string; requested_reviewers: { login: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
+    // The recipient is fixed by code, never by the draft: a watched org, an open PR, and one Sous was asked to review or already reviewed.
+    if (!config.orgs.includes(draft.org) || !draft.repo.toLowerCase().startsWith(`${draft.org.toLowerCase()}/`)) throw new Error(`${draft.repo} is not in a watched org; not posting`);
+    if (pull.state !== 'open') throw new Error(`${key} is ${pull.state}; not posting`);
+    if (!state.prs[key] && !pull.requested_reviewers.some((u) => u.login === me)) throw new Error(`${key} never asked for your review; not posting`);
+    const clone = join(sousHome(), 'cache', draft.repo);
+    if (!existsSync(clone)) throw new Error(`no clone at ${clone}; run sous checkout first`);
+    const git = (...a: string[]): string | null => {
+      try {
+        return execFileSync('git', a, { cwd: clone, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch {
+        return null;
+      }
+    };
+    const base = git('merge-base', `origin/${pull.base.ref}`, draft.head)?.trim();
+    const tree = (git('ls-tree', '-r', '--name-only', draft.head) ?? '').split('\n').filter(Boolean);
+    const read = (side: 'RIGHT' | 'LEFT', path: string): string[] | null => {
+      const sha = side === 'LEFT' ? base : draft.head;
+      const text = sha ? git('show', `${sha}:${path}`) : null;
+      return text === null ? null : text.split('\n');
+    };
+
+    let findings = draft.findings;
+    const repairing = values.repair !== undefined;
+    if (repairing) {
+      if (draft.repaired) throw new Error('this draft was repaired once already; Sous allows one repair');
+      findings = applyCorrections(findings, JSON.parse(readFileSync(values.repair!, 'utf8')) as Correction[]);
+      writeJson(file, { ...draft, findings, repaired: true });
+    }
+    const checked = verifyEvidence(findings, { files, tree, read });
+    const failing = new Set(checked.problems.map((p) => p.index));
+    if (failing.size && !repairing) {
+      const problems = checked.problems.map((p) => `#${p.index} ${p.problem}`);
+      logEvent(draft.org, 'lint-refused', { pr: key, problems });
+      throw new LintError([...problems, 'fix with one `sous post <draft> --repair <corrections.json>`: [{index, target: anchor|evidence|counterEvidence, item?, field: line|side|path|quote, value}]']);
+    }
+    // Points Sous already made on this PR are not made again.
+    const existing = (await getAll<{ path: string; line: number | null; body: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/comments?per_page=100`)).filter((c) => hasMarker(c.body));
+    const keep = checked.findings.filter((f, i) => !failing.has(i) && !existing.some((e) => isDuplicate(f, e)));
+    const dropped = checked.findings.length - keep.length;
+    if (dropped) logEvent(draft.org, 'dropped', { pr: key, failing: [...failing], duplicates: dropped - failing.size });
+    if (keep.length === 0 && failing.size === 0) {
+      // Every point is one Sous already made on this PR: the head is reviewed, nothing new to say.
+      state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString() };
+      saveState(draft.org, state);
+      logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: 'NONE', findings: [], allDuplicates: dropped });
+      print({ pr: key, event: 'NONE', dropped });
+      return 0;
+    }
+    if (keep.length === 0) throw new Error('nothing left to post after checks; record the head with sous mark --verified');
+    if (keep.length > config.maxCommentsPerReview) throw new LintError([`${keep.length} comments; at most ${config.maxCommentsPerReview} per review. Keep the most severe and drop the rest`]);
+
     let payload;
     try {
-      payload = buildReview(draft, { pending, attribution: config.attribution, files });
+      payload = buildReview({ ...draft, findings: keep }, { pending, attribution: config.attribution, files, suggestions: profile.postSuggestions });
     } catch (e) {
-      if (e instanceof LintError) logEvent(draft.org, 'lint-refused', { pr: prKey(draft.repo, draft.number), problems: e.problems });
+      if (e instanceof LintError) logEvent(draft.org, 'lint-refused', { pr: key, problems: e.problems });
       throw e;
     }
-    const { reviewId, commentIds } = await postReview(gh, draft, payload);
-    const state = loadState(draft.org);
-    const key = prKey(draft.repo, draft.number);
-    const prev = state.prs[key] ?? emptyPr(draft.head);
-    state.prs[key] = {
-      ...prev,
-      head: draft.head,
-      reviewedAt: new Date().toISOString(),
-      reviewIds: [...prev.reviewIds, reviewId],
-      commentIds: [...prev.commentIds, ...commentIds],
-    };
+    guardOutbound(draft.org, profile, key, payload.comments.map((c) => c.body));
+    const requested = async () => (await get<{ users: { login: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`)).users.map((u) => u.login);
+    const wasRequested = (await requested()).includes(me);
+    const { reviewId, commentIds } = await postReview(gh, { ...draft, findings: keep }, payload);
+    // Submitting a review removes the request from your queue; give it back so the PR still waits on you.
+    if (wasRequested && !(await requested()).includes(me)) {
+      await send(gh, 'POST', `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`, { reviewers: [me] }).catch((e: Error) => logEvent(draft.org, 'request-not-restored', { pr: key, error: e.message.slice(0, 200) }));
+    }
+    state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, reviewId], commentIds: [...prev.commentIds, ...commentIds], ...(base ? { mergeBase: base } : {}), patchId: patchId(files) };
     saveState(draft.org, state);
-    logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: draft.findings.map((f) => ({ severity: f.severity, path: f.path, line: f.line })) });
-    print({ pr: key, reviewId, event: payload.event ?? 'PENDING', comments: commentIds.length });
+    logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: keep.map((f) => ({ severity: f.severity, path: f.path, line: f.line, id: f.id, memory: f.memory ?? [] })) });
+    print({ pr: key, reviewId, event: payload.event ?? 'PENDING', comments: commentIds.length, dropped });
     return 0;
   },
 
-  /** Records a head as reviewed when nothing survived verification, so it is not reviewed again. */
+  /** Records a head as reviewed with nothing to post. Requires the verifier's result, so a crash is never a clean review. */
   async mark(args) {
-    const [org, repo, n, head] = args;
-    if (!org || !repo || !n || !head || !/^[0-9a-f]{40}$/.test(head)) throw new Error('usage: sous mark <org> <owner/repo> <number> <40-char head>');
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { verified: { type: 'string' } } });
+    const [org, repo, n, head] = positionals;
+    if (!org || !repo || !n || !head || !/^[0-9a-f]{40}$/.test(head) || !values.verified) throw new Error('usage: sous mark <org> <owner/repo> <number> <40-char head> --verified <verifier.json>');
+    const v = JSON.parse(readFileSync(values.verified, 'utf8')) as { kept?: { ownerDecision?: boolean }[]; dropped?: unknown[] };
+    if (!Array.isArray(v.kept) || !Array.isArray(v.dropped)) throw new Error('the verifier output has no kept and dropped lists; not marking the head as reviewed');
+    if (v.kept.some((k) => !k.ownerDecision)) throw new Error('the verifier kept findings; post them instead of marking');
     const state = loadState(org);
     const key = prKey(repo, Number(n));
     state.prs[key] = { ...(state.prs[key] ?? emptyPr(head)), head, reviewedAt: new Date().toISOString() };
     saveState(org, state);
-    logEvent(org, 'reviewed', { pr: key, head, event: 'NONE', findings: [] });
+    logEvent(org, 'reviewed', { pr: key, head, event: 'NONE', findings: [], droppedByVerifier: v.dropped.length });
     print({ pr: key, head, event: 'NONE' });
     return 0;
+  },
+
+  /** Fails unless every lens candidate id has exactly one verifier decision. */
+  async decisions(args) {
+    const [verifiedFile, ...lensFiles] = args;
+    if (!verifiedFile || lensFiles.length === 0) throw new Error('usage: sous decisions <verified.json> <lens.json...>');
+    const ids = lensFiles.flatMap((f) => (JSON.parse(readFileSync(f, 'utf8')) as { candidates?: { id?: string }[] }).candidates ?? []).map((c, i) => c.id ?? `missing-id-${i}`);
+    const missing = missingDecisions(ids, JSON.parse(readFileSync(verifiedFile, 'utf8')));
+    print({ candidates: ids.length, missing });
+    return missing.length ? 1 : 0;
   },
 
   /** Replies in a thread Sous started. Never in a thread you or anyone else started. */
@@ -233,6 +462,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       throw new LintError(problems);
     }
     if (isPaused(config, org)) throw new Error(`${org} is paused; not replying`);
+    guardOutbound(org, profile, key, [text]);
     const gh = await ghFor(profile.ghAccount);
     const body = signed(text, config.attribution, pr.head);
     const posted = JSON.parse(await gh(['api', '-X', 'POST', `repos/${repo}/pulls/${n}/comments/${id}/replies`, '--input', '-'], JSON.stringify({ body }))) as { id: number };
@@ -310,6 +540,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (!org || !repo || !n || !id || message.length === 0) throw new Error('usage: sous dismiss <org> <owner/repo> <number> <review-id> <message>');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
+    guardOutbound(org, profile, prKey(repo, Number(n)), [message.join(' ')]);
     const own = loadState(org).prs[prKey(repo, Number(n))]?.reviewIds ?? [];
     await dismissOwn(gh, repo, Number(n), Number(id), await whoami(gh), own, message.join(' '));
     logEvent(org, 'dismissed', { pr: prKey(repo, Number(n)), reviewId: Number(id) });
@@ -389,32 +620,316 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   },
 
   /** Scores an eval run (one draft per case) against the cases, and gates it against the accepted baseline. */
+  /**
+   * Scores eval runs against their cases. Loops over the cases the run was given (its run.json), so
+   * a case that crashed or wrote no draft scores zero instead of dropping out. Several run folders of
+   * the same cases are averaged before the gate. Reports, per case, how many gold points any lens came
+   * near against how many survived, so lost recall can be traced to the lenses or the verifier.
+   */
   async score(args) {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { label: { type: 'string' }, accept: { type: 'boolean' }, gate: { type: 'boolean' } } });
-    const [org, runDir] = positionals;
-    if (!org || !runDir) throw new Error('usage: sous score <org> <run-dir> [--label <text>] [--gate] [--accept]');
+    const [org, ...runDirs] = positionals;
+    if (!org || runDirs.length === 0) throw new Error('usage: sous score <org> <run-dir> [more run-dirs of the same cases] [--label <text>] [--gate] [--accept]');
     const casesDir = join(orgDir(org), 'replay', 'cases');
-    const scores = readdirSync(runDir)
-      .filter((f) => f.endsWith('.json') && !f.endsWith('.judge.json'))
-      .flatMap((f) => {
-        const id = f.replace(/\.json$/, '');
-        const c = readJson<Case | null>(join(casesDir, f), null);
+    const runs = runDirs.map((runDir) => {
+      const meta = readJson<{ cases?: string[] } & Record<string, unknown>>(join(runDir, 'run.json'), {});
+      // Older runs have no manifest: fall back to the drafts present.
+      const ids = meta.cases ?? readdirSync(runDir).filter((f) => /^[\w-]+\.json$/.test(f) && !/\.(judge|verified)\.json$|^run\.json$/.test(f) && !f.includes('.lens-')).map((f) => f.replace(/\.json$/, ''));
+      const scores = ids.flatMap((id) => {
+        const c = readJson<Case | null>(join(casesDir, `${id}.json`), null);
         if (!c) return [];
-        const draft = readJson<{ findings?: Draft['findings'] }>(join(runDir, f), {});
-        // Pairs from the match judge, when it ran: the same point made in another file or place.
+        const draft = readJson<{ findings?: Draft['findings'] }>(join(runDir, `${id}.json`), {});
         const judge = readJson<{ pairs?: [number, number][] }>(join(runDir, `${id}.judge.json`), {});
-        return [scoreCase(id, c.gold, draft.findings ?? [], 10, judge.pairs ?? [])];
+        const candidates = readdirSync(runDir).filter((f) => f.startsWith(`${id}.lens-`)).flatMap((f) => (readJson<{ candidates?: { path: string; line: number; claim?: string }[] }>(join(runDir, f), {}).candidates ?? []).map((x) => ({ path: x.path, line: x.line, body: x.claim ?? '' })));
+        return [{ ...scoreCase(id, c.gold, draft.findings ?? [], 10, judge.pairs ?? []), missingDraft: !existsSync(join(runDir, `${id}.json`)), nearByLenses: lensRecall(c.gold, candidates) }];
       });
-    if (scores.length === 0) throw new Error(`no drafts in ${runDir} match a case in ${casesDir}`);
-    const now = totals(scores);
+      return { runDir, provenance: meta, totals: totals(scores), scores };
+    });
+    if (runs.every((r) => r.scores.length === 0)) throw new Error(`no cases scored in ${runDirs.join(', ')}`);
+    const now = meanTotals(runs.map((r) => r.totals));
     const log = join(orgDir(org), 'replay', 'scores.jsonl');
     const history = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Totals & { accepted?: boolean }) : [];
     const baseline = [...history].reverse().find((h) => h.accepted) ?? null;
     const fails = gateFails(now, baseline);
     const accepted = Boolean(values.accept) && fails.length === 0;
-    appendLine(log, { at: new Date().toISOString(), label: values.label ?? '', ...now, accepted });
-    print({ ...now, baseline, fails, accepted, perCase: scores });
+    appendLine(log, { at: new Date().toISOString(), label: values.label ?? '', ...now, runs: runs.length, accepted, provenance: runs[0]?.provenance ?? {} });
+    print({ ...now, runs: runs.map((r) => ({ runDir: r.runDir, ...r.totals })), baseline, fails, accepted, perCase: runs.flatMap((r) => r.scores) });
     return values.gate && fails.length ? 1 : 0;
+  },
+
+  /**
+   * Starts an eval: one run folder per repeat, each with run.json (the cases, the engine commit, a
+   * hash of the prompts and agents, the memory commit). Refuses when the day's eval budget is spent.
+   */
+  async evalrun(args) {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { cases: { type: 'string' }, repeat: { type: 'string' } } });
+    const [org, label] = positionals;
+    if (!org || !label || !values.cases) throw new Error('usage: sous evalrun <org> <label> --cases a,b,c [--repeat 3]');
+    const cases = values.cases.split(',').filter(Boolean);
+    const repeat = Number(values.repeat ?? 3);
+    const config = loadConfig();
+    const today = new Date().toISOString().slice(0, 10);
+    const log = join(orgDir(org), 'events.jsonl');
+    const usedToday = (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []).map((l) => JSON.parse(l) as { at: string; type: string; caseRuns?: number }).filter((e) => e.type === 'eval-started' && e.at.startsWith(today)).reduce((n, e) => n + (e.caseRuns ?? 0), 0);
+    const want = cases.length * repeat;
+    if (usedToday + want > config.evalBudgetPerDay) throw new Error(`eval budget: ${usedToday} of ${config.evalBudgetPerDay} case-runs used today; this needs ${want}. Raise evalBudgetPerDay in config.json or wait until tomorrow.`);
+    const here = join(import.meta.dirname, '..');
+    const engine = (await run('git', ['rev-parse', 'HEAD'], { cwd: here })).stdout.trim();
+    const prompts = createHash('sha256');
+    for (const d of ['prompts/lenses', '.claude/agents', '.claude/commands']) for (const f of readdirSync(join(here, d)).sort()) prompts.update(readFileSync(join(here, d, f)));
+    const memory = (await run('git', ['rev-parse', 'HEAD'], { cwd: orgDir(org) }).catch(() => ({ stdout: 'none' }))).stdout.trim();
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
+    const dirs = Array.from({ length: repeat }, (_, i) => join(orgDir(org), 'replay', 'runs', `${stamp}-${label.replace(/[^\w-]/g, '-')}-r${i + 1}`));
+    for (const [i, dir] of dirs.entries()) {
+      mkdirSync(dir, { recursive: true });
+      writeJson(join(dir, 'run.json'), { org, label, cases, repeat: i + 1, of: repeat, engine, prompts: prompts.copy().digest('hex').slice(0, 16), memory, started: new Date().toISOString() });
+    }
+    logEvent(org, 'eval-started', { label, caseRuns: want, dirs });
+    print({ dirs, caseRuns: want, budgetLeftToday: config.evalBudgetPerDay - usedToday - want });
+    return 0;
+  },
+
+  /**
+   * Turns a benchmark file you supply (public PRs with their golden comments) into replay cases in a
+   * separate `bench` org, so Sous's general bug-finding can be checked beside its fit to you.
+   * Input: [{ repo, number, head, base, comments: [{ path, line, body }] }].
+   */
+  async bench(args) {
+    const [sub, file] = args;
+    if (sub !== 'import' || !file) throw new Error('usage: sous bench import <benchmark.json>');
+    const items = JSON.parse(readFileSync(file, 'utf8')) as { repo: string; number: number; head: string; base: string; comments: { path: string; line: number; body: string }[] }[];
+    const dir = join(orgDir('bench'), 'replay', 'cases');
+    mkdirSync(dir, { recursive: true });
+    for (const it of items) {
+      const id = `${it.repo.split('/')[1]}-${it.number}-${it.head.slice(0, 12)}`;
+      const c: Case = { id, org: 'bench', repo: it.repo, number: it.number, head: it.head, base: it.base, me: '', before: new Date().toISOString(), gold: it.comments.map((g) => ({ path: g.path, line: g.line, text: g.body.slice(0, 500), source: 'inline' })) };
+      writeJson(join(dir, `${id}.json`), c);
+    }
+    print({ cases: items.length, dir });
+    return 0;
+  },
+
+  /**
+   * `sous memory <org> <repo> <n>`: the memory bullets for a PR, by scope and by the names the diff touches, ranked.
+   * `sous memory hits <org>`: when each bullet last drove a posted finding, for pruning.
+   */
+  async memory(args) {
+    if (args[0] === 'hits') {
+      const org = args[1];
+      if (!org) throw new Error('usage: sous memory hits <org>');
+      const hits = new Map<string, { count: number; last: string }>();
+      const log = join(orgDir(org), 'events.jsonl');
+      for (const line of existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []) {
+        const e = JSON.parse(line) as { type: string; at: string; findings?: { memory?: string[] }[] };
+        if (e.type !== 'reviewed') continue;
+        for (const ref of (e.findings ?? []).flatMap((f) => f.memory ?? [])) hits.set(ref, { count: (hits.get(ref)?.count ?? 0) + 1, last: e.at });
+      }
+      print(Object.fromEntries([...hits.entries()].sort((a, b) => b[1].last.localeCompare(a[1].last))));
+      return 0;
+    }
+    const [org, repo, n] = args;
+    if (!org || !repo || !n) throw new Error('usage: sous memory <org> <owner/repo> <number> | sous memory hits <org>');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const files = (await getAll<{ filename: string; patch?: string }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).filter((f) => !isNoise(f.filename));
+    const bullets = memoryBullets(org);
+    const hits = searchMemory(bullets, files.map((f) => f.filename), diffTerms(files));
+    print(hits.map((h) => ({ at: `${h.bullet.file}:${h.bullet.line}`, score: h.score, trust: h.bullet.trust, matchedBy: h.matchedBy, text: h.bullet.raw })));
+    return 0;
+  },
+
+  /**
+   * Checks every cited fact against the repo: `stale` when its file changed after the pinned commit,
+   * `gone` when the file no longer exists. `--pin` records today's commit on unpinned cites;
+   * `--retire` removes bullets whose every cited file is gone. Changes are committed to memory.
+   */
+  async facts(args) {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { pin: { type: 'boolean' }, retire: { type: 'boolean' } } });
+    const [org] = positionals;
+    if (!org) throw new Error('usage: sous facts <org> [--pin] [--retire]');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const defaultRepo = profile.ruleSources[0]?.split(':')[0];
+    const latestCache = new Map<string, string | null | 'deleted'>();
+    const latest = async (c: Cite): Promise<string | null | 'deleted'> => {
+      const repo = c.repo ?? defaultRepo;
+      if (!repo) return null;
+      const key = `${repo}:${c.path}`;
+      if (!latestCache.has(key)) {
+        const commits = await get<{ sha: string }[]>(gh, `repos/${repo}/commits?path=${encodeURIComponent(c.path)}&per_page=1`).catch(() => []);
+        const exists = await get(gh, `repos/${repo}/contents/${c.path}`).then(() => true, () => false);
+        latestCache.set(key, exists ? (commits[0]?.sha ?? null) : 'deleted');
+      }
+      return latestCache.get(key)!;
+    };
+    const report: { at: string; state: string; cite: string }[] = [];
+    let changed = 0;
+    for (const dir of ['rules', 'system', 'candidates']) {
+      const d = join(orgDir(org), dir);
+      if (!existsSync(d)) continue;
+      for (const f of readdirSync(d).filter((x) => x.endsWith('.md'))) {
+        const path = join(d, f);
+        const lines = readFileSync(path, 'utf8').split('\n');
+        for (const b of parseBullets(`${dir}/${f}`, lines.join('\n')).filter((b) => b.cites.length)) {
+          const states = await Promise.all(b.cites.map(async (c) => ({ c, s: factState(c, await latest(c)), sha: await latest(c) })));
+          for (const { c, s } of states) if (s !== 'current') report.push({ at: `${b.file}:${b.line}`, state: s, cite: `${c.repo ?? defaultRepo}:${c.path}${c.sha ? `@${c.sha}` : ''}` });
+          if (values.retire && states.every((x) => x.s === 'gone')) {
+            lines[b.line - 1] = '\u0000';
+            changed++;
+          } else if (values.pin && states.some((x) => x.s === 'unpinned')) {
+            lines[b.line - 1] = pinBullet(b.raw, states.map(({ c, s, sha }) => (s === 'unpinned' && typeof sha === 'string' ? { ...c, sha } : c)));
+            changed++;
+          }
+        }
+        writeFileSync(path, lines.filter((l) => l !== '\u0000').join('\n'));
+      }
+    }
+    if (changed) await commitMemory(orgDir(org), `facts: ${values.retire ? 'retire facts whose files are gone' : ''}${values.pin ? ' pin unpinned cites' : ''}`.trim());
+    print({ changed, notCurrent: report });
+    return 0;
+  },
+
+  /**
+   * Token use per subagent for one Claude Code session, read from its transcripts. Defaults to the
+   * newest session run from this folder. With --org, logs it as a usage event.
+   */
+  async tokens(args) {
+    const { values } = parseArgs({ args, options: { session: { type: 'string' }, org: { type: 'string' }, label: { type: 'string' }, cwd: { type: 'string' } } });
+    const projects = join(homedir(), '.claude', 'projects', (values.cwd ?? process.cwd()).replace(/[^A-Za-z0-9]/g, '-'));
+    if (!existsSync(projects)) throw new Error(`no Claude Code transcripts at ${projects}`);
+    const session =
+      values.session ??
+      readdirSync(projects)
+        .filter((f) => f.endsWith('.jsonl'))
+        .map((f) => ({ id: f.replace(/\.jsonl$/, ''), t: statSync(join(projects, f)).mtimeMs }))
+        .sort((a, b) => b.t - a.t)[0]?.id;
+    if (!session) throw new Error('no sessions found');
+    const byAgent: Record<string, Record<string, Usage>> = { main: usageByModel(readFileSync(join(projects, `${session}.jsonl`), 'utf8')) };
+    const subDir = join(projects, session, 'subagents');
+    for (const f of existsSync(subDir) ? readdirSync(subDir).filter((x) => x.endsWith('.jsonl')) : []) {
+      const meta = readJson<{ agentType?: string }>(join(subDir, f.replace(/\.jsonl$/, '.meta.json')), {});
+      const type = meta.agentType ?? 'unknown';
+      byAgent[type] = mergeUsage(byAgent[type] ?? {}, usageByModel(readFileSync(join(subDir, f), 'utf8')));
+    }
+    const totals = Object.values(byAgent).reduce((t, u) => mergeUsage(t, u), {} as Record<string, Usage>);
+    if (values.org) logEvent(values.org, 'usage', { session, label: values.label ?? '', byAgent, totals });
+    print({ session, byAgent, totals });
+    return 0;
+  },
+
+  /**
+   * A cache key for one stage of an eval case: the same head, base, prompts and memory give the same
+   * key, so a rerun reuses the stage's output instead of paying for it again.
+   */
+  async stagekey(args) {
+    const [org, stage, head, lens] = args;
+    if (!org || !stage || !head) throw new Error('usage: sous stagekey <org> <gatherer|lens|verifier> <head> [lens]');
+    const here = join(import.meta.dirname, '..');
+    const hashFile = (p: string) => (existsSync(p) ? createHash('sha256').update(readFileSync(p)).digest('hex') : 'none');
+    const memoryHead = (await run('git', ['rev-parse', 'HEAD'], { cwd: orgDir(org) }).catch(() => ({ stdout: 'none' }))).stdout.trim();
+    const parts = [stage, lens ?? '', head, hashFile(join(here, '.claude', 'agents', `${stage}.md`)), lens ? hashFile(join(here, 'prompts', 'lenses', `${lens}.md`)) : '', hashFile(join(meDir(), 'habits.md')), memoryHead];
+    const key = createHash('sha256').update(parts.join('\n')).digest('hex').slice(0, 24);
+    const path = join(sousHome(), 'cache', 'stages', `${key}.json`);
+    print({ key, path, cached: existsSync(path) });
+    return 0;
+  },
+
+  /** What Sous has done in an org, from its event log: reviews, findings, refusals, drops and token use. */
+  async stats(args) {
+    const [org, sinceArg] = args;
+    if (!org) throw new Error('usage: sous stats <org> [since ISO date]');
+    const since = sinceArg ?? new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const log = join(orgDir(org), 'events.jsonl');
+    const events = (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []).map((l) => JSON.parse(l) as { at: string; type: string; event?: string; findings?: { severity: string }[]; totals?: Record<string, Usage> }).filter((e) => e.at >= since);
+    const count = (f: (e: (typeof events)[number]) => boolean) => events.filter(f).length;
+    const severities: Record<string, number> = {};
+    for (const e of events.filter((e) => e.type === 'reviewed')) for (const f of e.findings ?? []) severities[f.severity] = (severities[f.severity] ?? 0) + 1;
+    const tokens = events.filter((e) => e.type === 'usage').reduce((t, e) => mergeUsage(t, e.totals ?? {}), {} as Record<string, Usage>);
+    print({
+      since,
+      reviews: { posted: count((e) => e.type === 'reviewed' && e.event !== 'NONE'), nothingToPost: count((e) => e.type === 'reviewed' && e.event === 'NONE'), requestChanges: count((e) => e.event === 'REQUEST_CHANGES') },
+      findings: severities,
+      refusedByLint: count((e) => e.type === 'lint-refused'),
+      droppedAtPost: count((e) => e.type === 'dropped'),
+      rebaseSkips: count((e) => e.type === 'rebase-skip'),
+      replies: count((e) => e.type === 'replied'),
+      resolved: count((e) => e.type === 'resolved'),
+      dismissed: count((e) => e.type === 'dismissed'),
+      tokens,
+    });
+    return 0;
+  },
+
+  /** How deep to review: lenses, the missed pass and risk drivers, from the changed paths alone. */
+  async plan(args) {
+    const [org, repo, n] = args;
+    if (!org || !repo || !n) throw new Error('usage: sous plan <org> <owner/repo> <number>');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const pull = await get<{ base: { ref: string }; head: { repo: { default_branch: string } | null } }>(gh, `repos/${repo}/pulls/${n}`);
+    const files = (await getAll<{ filename: string; additions: number; deletions: number }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).filter((f) => !isNoise(f.filename));
+    const stacked = pull.base.ref !== (pull.head.repo?.default_branch ?? 'main');
+    print(plan(files, { stacked, orgRules: profile.ruleSources.length > 0 }));
+    return 0;
+  },
+
+  /**
+   * Freezes code the PR body and its linked issues point to, pinned to a commit, as evidence.
+   * Never copies a private repo's code into a review of a public repo.
+   */
+  async links(args) {
+    const [org, repo, n] = args;
+    if (!org || !repo || !n) throw new Error('usage: sous links <org> <owner/repo> <number>');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const pull = await get<{ body: string | null }>(gh, `repos/${repo}/pulls/${n}`);
+    const prRepo = await get<{ private: boolean }>(gh, `repos/${repo}`);
+    let text = pull.body ?? '';
+    for (const m of text.matchAll(/(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+#(\d+)/gi)) {
+      text += `\n${(await get<{ body: string | null }>(gh, `repos/${repo}/issues/${m[1]}`).catch(() => ({ body: '' }))).body ?? ''}`;
+    }
+    const dir = join(orgDir(org), 'drafts', `${repo.split('/')[1]}-${n}-links`);
+    mkdirSync(dir, { recursive: true });
+    const saved: { link: string; sha: string; file: string }[] = [];
+    const skipped: { link: string; why: string }[] = [];
+    for (const l of codeLinks(text).slice(0, 10)) {
+      const link = `${l.owner}/${l.repo}@${l.ref}:${l.path}`;
+      const target = await get<{ private: boolean }>(gh, `repos/${l.owner}/${l.repo}`).catch(() => null);
+      if (!target) {
+        skipped.push({ link, why: 'repo not readable' });
+        continue;
+      }
+      if (target.private && !prRepo.private) {
+        skipped.push({ link, why: 'private code is never copied into a public repo review' });
+        continue;
+      }
+      // A ref with slashes (a branch like agent/x) is tried at each split point.
+      const parts = `${l.ref}/${l.path}`.split('/');
+      let done = false;
+      for (let i = 1; i < parts.length && !done; i++) {
+        const ref = parts.slice(0, i).join('/');
+        const path = parts.slice(i).join('/');
+        const commit = await get<{ sha: string }>(gh, `repos/${l.owner}/${l.repo}/commits/${encodeURIComponent(ref)}`).catch(() => null);
+        if (!commit) continue;
+        const content = await get<{ content?: string; encoding?: string }>(gh, `repos/${l.owner}/${l.repo}/contents/${path}?ref=${commit.sha}`).catch(() => null);
+        if (!content?.content) continue;
+        const lines = Buffer.from(content.content, 'base64').toString('utf8').split('\n');
+        const [from, to] = l.lines ?? [1, lines.length];
+        const file = join(dir, `${l.owner}__${l.repo}__${path.replaceAll('/', '__')}@${commit.sha.slice(0, 12)}`);
+        writeFileSync(file, lines.slice(Math.max(0, from - 21), to + 20).map((t, k) => `${Math.max(1, from - 20) + k}\t${t}`).join('\n'));
+        saved.push({ link, sha: commit.sha, file });
+        done = true;
+      }
+      if (!done) skipped.push({ link, why: 'ref or path not found' });
+    }
+    print({ saved, skipped });
+    return 0;
+  },
+
+  /** Prints which of the given paths are noise (lockfiles, generated output), one per line. */
+  async noise(args) {
+    for (const p of args.filter(isNoise)) console.log(p);
+    return 0;
   },
 
   async pause(args) {

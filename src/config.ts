@@ -11,6 +11,10 @@ export interface Config {
   maxReviewsPerRun: number;
   /** Italic line that ends every comment and the review body, saying whose AI reviewer wrote it. */
   attribution: string;
+  /** Eval case-runs allowed per day (cases × repeats), so the learning loop can't spend without limit. */
+  evalBudgetPerDay: number;
+  /** Inline comments one review may carry; more is refused, so one PR can't be flooded. */
+  maxCommentsPerReview: number;
 }
 
 export interface Profile {
@@ -23,6 +27,12 @@ export interface Profile {
   knowledgeGraph: { mcp: string } | null;
   /** Paths (repo/path) whose base-branch copies hold the org's rules. */
   ruleSources: string[];
+  /** Post the lowest tier too. Off until the replay shows Sivantha makes such points. */
+  postSuggestions: boolean;
+  /** Hosts besides github.com/<org>/ that posted links may point to (outbound.ts). */
+  linkHosts: string[];
+  /** Installed Claude Code skills that hold this org's conventions, each for the paths it covers (`plugin:skill` or `skill`). */
+  skills: { name: string; paths: string[] }[];
 }
 
 const configPath = (): string => join(sousHome(), 'config.json');
@@ -33,7 +43,7 @@ export function loadConfig(): Config {
   if (!c) throw new Error(`no ${configPath()}; run \`sous init\``);
   if (!Array.isArray(c.orgs)) throw new Error('config.json: "orgs" must be a list');
   if (c.attribution !== undefined && !/^\S.*\S$/.test(c.attribution)) throw new Error('config.json: "attribution" must be one line of text');
-  return { orgs: c.orgs, paused: c.paused ?? false, maxReviewsPerRun: c.maxReviewsPerRun ?? 3, attribution: c.attribution ?? 'From the AI reviewer' };
+  return { orgs: c.orgs, paused: c.paused ?? false, maxReviewsPerRun: c.maxReviewsPerRun ?? 3, attribution: c.attribution ?? 'From the AI reviewer', evalBudgetPerDay: c.evalBudgetPerDay ?? 15, maxCommentsPerReview: c.maxCommentsPerReview ?? 10 };
 }
 
 export function saveConfig(c: Config): void {
@@ -55,6 +65,9 @@ export function loadProfile(org: string): Profile {
     coderabbit: p.coderabbit ?? null,
     knowledgeGraph: p.knowledgeGraph ?? null,
     ruleSources: p.ruleSources ?? [],
+    postSuggestions: p.postSuggestions ?? false,
+    linkHosts: p.linkHosts ?? [],
+    skills: p.skills ?? [],
   };
 }
 

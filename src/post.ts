@@ -1,3 +1,5 @@
+import { diffLines } from './evidence.ts';
+import { cleanForPublishing } from './published.ts';
 import { get, send, type Gh } from './gh.ts';
 import { lintFinding, lintText, type Finding } from './voice-lint.ts';
 
@@ -18,7 +20,7 @@ export interface ReviewPayload {
   body: string;
   /** Omitted for a pending review that only you can see. */
   event?: ReviewEvent;
-  comments: { path: string; line: number; side: 'RIGHT'; body: string }[];
+  comments: { path: string; line: number; side: 'RIGHT' | 'LEFT'; body: string; start_line?: number; start_side?: 'RIGHT' | 'LEFT' }[];
 }
 
 /** Hidden in every Sous comment, so Sous can tell its own comments from yours. */
@@ -26,25 +28,12 @@ export const marker = (head: string): string => `<!-- sous:${head.slice(0, 12)} 
 export const hasMarker = (body: string | null | undefined): boolean => /<!-- sous:[0-9a-f]+ -->/.test(body ?? '');
 
 /** Every comment and reply Sous posts ends with the italic attribution, then the hidden marker. */
-export const signed = (text: string, attribution: string, head: string): string => `${text.trim()}\n\n_${attribution}_\n\n${marker(head)}`;
+export const signed = (text: string, attribution: string, head: string): string => `${cleanForPublishing(text.trim())}\n\n_${attribution}_\n\n${marker(head)}`;
 
 const render = (f: Finding): string => (f.fix?.trim() ? `${f.body}\n\nFix: ${f.fix}` : f.body);
 
 /** RIGHT-side line numbers a review comment may anchor to: lines a hunk adds or keeps. */
-export function rightLines(patch: string | undefined): Set<number> {
-  const lines = new Set<number>();
-  let line = 0;
-  for (const row of (patch ?? '').split('\n')) {
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
-    if (hunk) {
-      line = Number(hunk[1]);
-      continue;
-    }
-    if (line === 0 || row.startsWith('-') || row.startsWith('\\')) continue;
-    lines.add(line++);
-  }
-  return lines;
-}
+export const rightLines = (patch: string | undefined): Set<number> => diffLines(patch).RIGHT;
 
 export class LintError extends Error {
   readonly problems: string[];
@@ -56,15 +45,22 @@ export class LintError extends Error {
 
 export function buildReview(
   d: Draft,
-  opts: { pending: boolean; attribution: string; files: { filename: string; patch?: string }[] },
+  opts: { pending: boolean; attribution: string; files: { filename: string; patch?: string }[]; suggestions?: boolean },
 ): ReviewPayload {
   const problems = d.findings.flatMap((f) => lintFinding(f).map((p) => `${f.path}:${f.line}: ${p}`));
+  if (!opts.suggestions) for (const f of d.findings.filter((f) => f.severity === 'suggestion')) problems.push(`${f.path}:${f.line}: suggestions are off for this org; leave them out (they still count in evals)`);
   for (const f of d.findings.filter((f) => f.owner)) problems.push(`${f.path}:${f.line}: owner decision; it goes to questions.md, never the PR`);
   if (d.findings.length === 0) problems.push('no findings; record the head with `sous mark` instead');
   if (!/^[0-9a-f]{40}$/.test(d.head)) problems.push('head is not a full commit sha');
-  const anchors = new Map(opts.files.map((f) => [f.filename, rightLines(f.patch)]));
+  const anchors = new Map(opts.files.map((f) => [f.filename, diffLines(f.patch)]));
   for (const f of d.findings) {
-    if (!anchors.get(f.path)?.has(f.line)) problems.push(`${f.path}:${f.line}: not a line in the diff; GitHub would reject the whole review`);
+    const lines = anchors.get(f.path)?.[f.side ?? 'RIGHT'];
+    if (!lines?.has(f.line)) problems.push(`${f.path}:${f.line}: not a line in the diff; GitHub would reject the whole review`);
+    if (f.startLine !== undefined) {
+      // GitHub needs every line of a range inside one hunk, so each line between must be a diff line too.
+      const span = Array.from({ length: f.line - f.startLine + 1 }, (_, i) => f.startLine! + i);
+      if (f.startLine >= f.line || !span.every((l) => lines?.has(l))) problems.push(`${f.path}:${f.startLine}-${f.line}: a range must run forward inside one hunk of the diff`);
+    }
   }
   if (problems.length) throw new LintError(problems);
 
@@ -72,7 +68,13 @@ export function buildReview(
   const payload: ReviewPayload = {
     commit_id: d.head,
     body: '',
-    comments: d.findings.map((f) => ({ path: f.path, line: f.line, side: 'RIGHT', body: signed(render(f), opts.attribution, d.head) })),
+    comments: d.findings.map((f) => ({
+      path: f.path,
+      line: f.line,
+      side: f.side ?? 'RIGHT',
+      ...(f.startLine !== undefined ? { start_line: f.startLine, start_side: f.side ?? 'RIGHT' } : {}),
+      body: signed(render(f), opts.attribution, d.head),
+    })),
   };
   if (!opts.pending) payload.event = d.findings.some((f) => f.severity === 'major') ? 'REQUEST_CHANGES' : 'COMMENT';
   return payload;
