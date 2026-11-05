@@ -52,7 +52,8 @@
     "allowUnsandboxedCommands": false,
     "excludedCommands": [
       "./bin/sous *",
-      "gh *"
+      "gh *",
+      "rtk gh *"
     ],
     "filesystem": {
       "allowWrite": [
@@ -89,5 +90,8 @@
         }
       ]
     }
+  },
+  "env": {
+    "CAVEMAN_NATIVE_PROFILE": "record-only"
   }
 }

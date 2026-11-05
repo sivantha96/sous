@@ -25,3 +25,20 @@ test('voice lint catches em-dash, emoji, please and hedges', () => {
   assert.deepEqual(lintText('remove this, looks unused'), []);
   assert.equal(lintText('please remove — unused \u{1F44D} I think').length, 4);
 });
+
+test('a home folder path is a leak even with an empty denylist', () => {
+  // Joined at run time so this file passes its own leak check.
+  const mac = ['', 'Users', 'someone'].join('/');
+  assert.equal(findLeaks(`"'${mac}/.nvm/bin/node' x"`, [])[0]?.term, mac);
+  assert.equal(findLeaks(`cd ${['', 'home', 'dev'].join('/')}/project`, []).length, 1);
+  assert.equal(findLeaks('see ~/.sous and $HOME/.claude', []).length, 0);
+});
+
+test('no tracked file holds a home folder path', async () => {
+  const { execFileSync } = await import('node:child_process');
+  const { readFileSync } = await import('node:fs');
+  const root = join(import.meta.dirname, '..');
+  const files = execFileSync('git', ['ls-files', '-z'], { cwd: root, encoding: 'utf8' }).split('\0').filter(Boolean);
+  const found = files.flatMap((f) => findLeaks(readFileSync(join(root, f), 'utf8'), []).map((l) => `${f}:${l.line}`));
+  assert.deepEqual(found, []);
+});
