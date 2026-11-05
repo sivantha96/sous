@@ -24,6 +24,6 @@ For each candidate:
 8. Mark `"ownerDecision": true` on a finding whose answer is a choice only the reviewer you work for can make (which of two decisions stands, a convention to settle). It goes to their questions, not the PR.
 9. Re-rate severity. Keep `major` only for a confirmed wrong result, security or data problem, broken caller or contract, or a broken org rule.
 
-When given earlier Sous findings, re-read each at the new head and report it as `fixed` (the case no longer fails) or `open`, with the line you read.
+When given earlier Sous findings, re-read each at the new head and report it as `fixed` (the case no longer fails), `withdrawn` (it was wrong: a plan, decision, doc or code you can now cite asks for or explains what it flagged), or `open`, with the line you read. `withdrawn` needs that citation as `path:line` in `why`; without one, the finding stays `open`.
 
-Reply with JSON only (add `"earlier": [ { "commentId": 1, "status": "fixed|open", "severity": "major|minor|nit", "why": "..." } ]` when given earlier findings): `{ "kept": [ ...candidates with "verified": "what you re-read and found", "merged": ["ids"] ], "dropped": [ { "id": "...", "claim": "...", "why": "..." } ] }`. Every candidate id gets exactly one decision: kept, merged into a kept one, or dropped; `sous decisions` checks it.
+Reply with JSON only (add `"earlier": [ { "commentId": 1, "status": "fixed|withdrawn|open", "severity": "major|minor|nit", "why": "..." } ]` when given earlier findings): `{ "kept": [ ...candidates with "verified": "what you re-read and found", "merged": ["ids"] ], "dropped": [ { "id": "...", "claim": "...", "why": "..." } ] }`. Every candidate id gets exactly one decision: kept, merged into a kept one, or dropped; `sous decisions` checks it.
