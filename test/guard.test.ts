@@ -121,7 +121,7 @@ test('writes: credentials, .git, guard files and paths outside ~/.sous are refus
   const root = join(import.meta.dirname, '..');
   const home = process.env.SOUS_HOME ?? join(homedir(), '.sous');
   assert.equal(checkWrite(join(home, 'orgs', 'o', 'drafts', 'x.json'), 'writer', '/tmp').ok, true);
-  assert.equal(checkWrite(join(tmpdir(), 'scratch.json'), 'lens', '/tmp').ok, true);
+  assert.equal(checkWrite(join(tmpdir(), 'scratch.json'), 'reader', '/tmp').ok, true);
   assert.equal(checkWrite(join(homedir(), 'notes.md'), 'writer', '/tmp').ok, false);
   assert.equal(checkWrite(join(home, 'orgs', 'o', '.git', 'hooks', 'post-commit'), 'reflector', '/tmp').ok, false);
   assert.equal(checkWrite(join(root, 'src', 'plan.ts'), 'reflector', '/tmp').ok, true);
