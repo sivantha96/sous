@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendLine, orgDir, readJson, writeJson } from './home.ts';
 
@@ -58,4 +58,26 @@ export interface LoggedEvent {
 export function readEvents(org: string): LoggedEvent[] {
   const log = join(orgDir(org), 'events.jsonl');
   return existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as LoggedEvent) : [];
+}
+
+/**
+ * One run per org at a time: each org runs on its own schedule, and a slow run must not overlap the
+ * next one and review the same PRs twice. The lock names the Claude Code session holding it; a run
+ * that dies leaves it behind, so it expires after LOCK_MINUTES.
+ */
+export const LOCK_MINUTES = 90;
+const lockPath = (org: string): string => join(orgDir(org), 'run.lock');
+
+export function takeLock(org: string, session: string, now = new Date()): { ok: true } | { ok: false; heldBy: string; since: string } {
+  const held = readJson<{ session?: string; at?: string } | null>(lockPath(org), null);
+  if (held?.session && held.session !== session && held.at && now.getTime() - Date.parse(held.at) < LOCK_MINUTES * 60_000) return { ok: false, heldBy: held.session, since: held.at };
+  writeJson(lockPath(org), { session, at: now.toISOString() });
+  return { ok: true };
+}
+
+export function releaseLock(org: string, session: string): boolean {
+  const held = readJson<{ session?: string } | null>(lockPath(org), null);
+  if (held?.session !== session) return false;
+  rmSync(lockPath(org));
+  return true;
 }

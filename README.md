@@ -17,14 +17,22 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 1. `pnpm install`
 2. `./bin/sous init`
 3. `./bin/sous org add <org>` (add `--draft` to start an org with pending reviews only)
-4. Run Claude Code in this folder and try `/review <org> <owner/repo> <number>`.
-5. Schedule `/run` every 15 minutes as a Claude Code desktop scheduled task with this folder as its working directory.
+4. Run Claude Code in this folder and try `/review <PR link>`.
+5. For each org, create a Claude Code desktop scheduled task with this folder as its working directory, the prompt `/run <org>`, and the interval you want (15 minutes is a good start).
+
+## Schedules and hand reviews
+
+- **One schedule per org.** `/run <org>` reviews only that org's PRs that request your review, so each org gets its own task and interval. `/run` with no org covers every org in one task.
+- **No overlap.** `/run` takes a lock on each org it covers (`sous due --lock`), so a run that is still working when the next one starts keeps that org; the next run skips it. A run that dies leaves the lock, which expires after 90 minutes.
+- **Cap.** `maxReviewsPerRun` applies to each run, so with one schedule per org it is a cap per org.
+- **By hand.** `/review <PR link>` reviews one PR now, whether or not it is due and whoever asked for review. Its cost and problems go through the same learning round as a scheduled run.
 
 ## Commands
 
 | Command | Does |
 |---|---|
-| `sous due` | Finds PRs due in every org, reads CodeRabbit's state, picks this run's PRs (capped by `maxReviewsPerRun`). No model tokens. A PR is due when it is new, was pushed, has replies on Sous's threads, or was re-requested by someone else after Sous's last review with no push (`REREQUESTED`). An org whose gh account can't sign in is listed as `blocked`; a PR that errors is listed as skipped, and the rest still run |
+| `sous due` | Finds PRs due in every org (or one with `--org`), reads CodeRabbit's state, picks this run's PRs (capped by `maxReviewsPerRun`). No model tokens. A PR is due when it is new, was pushed, has replies on Sous's threads, or was re-requested by someone else after Sous's last review with no push (`REREQUESTED`). An org whose gh account can't sign in is listed as `blocked`; a PR that errors is listed as skipped, and the rest still run. With `--lock <session>`, an org another run holds is listed as `locked` |
+| `sous unlock` | Releases the run lock `sous due --lock` took, when the given session holds it |
 | `sous gate` | Waits for CodeRabbit on one PR, polling every 3 minutes |
 | `sous checkout` | Read-only worktree of a PR head, without `.claude/`, `.mcp.json` and other AI-config paths (their changes are reviewed from the diff, their base copies read with `git show`). Also lists added lines that carry invisible or bidi characters (`hiddenCharacters`) |
 | `sous prtext` | The PR's title, body, reviews and comments with HTML comments and invisible characters removed, for the gatherer's `.pr-text.md`. The guard keeps the verifier and writer from reading that file |
