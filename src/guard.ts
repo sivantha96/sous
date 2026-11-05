@@ -134,6 +134,11 @@ function checkSous(argv: string[], role: Role): Verdict {
 /** Decides one Bash command for one role. */
 export function checkCommand(command: string, role: Role, cwd: string): Verdict {
   const parsed = parseCommandLine(command);
+  // The sandbox lets a call out only when every command in it is excluded, so a chained gh or sous
+  // runs sandboxed and fails to sign in; refusing it says why instead.
+  const stages = parsed.ok ? parsed.parsed.stages : null;
+  const holdsToken = (argv: string[]) => argv[0] === 'gh' || argv[0] === 'rtk' && argv[1] === 'gh' || argv[0] === './bin/sous' || argv[0]!.endsWith('/bin/sous');
+  if (stages ? stages.length > 1 && stages.some(holdsToken) : CHAINED_TOKEN_RE.test(command.replace(/\d*>&\d/g, ''))) return no('run gh and ./bin/sous as a call of their own, with no pipe or chain: chained, they run in the sandbox without the token');
   if (!parsed.ok) {
     // The main session may use full shell syntax; it only loses network tools.
     if (role === 'main') {
@@ -162,6 +167,8 @@ export function checkCommand(command: string, role: Role, cwd: string): Verdict 
   }
   return { ok: true };
 }
+
+const CHAINED_TOKEN_RE = /(^|[\s;&|(])(gh|\.\/bin\/sous)\s[^]*[|;&]|[|;&][^]*(^|[\s;&|(])(gh|\.\/bin\/sous)\s/;
 
 const NETWORK_RE = new RegExp(`(^|[\\s;&|(\`$])(${[...NETWORK].join('|')})(\\s|$)`);
 

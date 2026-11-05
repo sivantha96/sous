@@ -1,0 +1,10 @@
+{
+  "sandbox": {
+    "excludedCommands": [
+      "'/Users/sivantha/.nvm/versions/node/v26.12.1/bin/node' '/Users/sivantha/.nvm/versions/node/v26.12.1/bin/caveman' shrink -- gh *",
+      "'/Users/sivantha/.nvm/versions/node/v26.12.1/bin/node' '/Users/sivantha/.nvm/versions/node/v26.12.1/bin/caveman' shrink -- ./bin/sous *",
+      "/Users/sivantha/.nvm/versions/node/v26.12.1/bin/node /Users/sivantha/.nvm/versions/node/v26.12.1/bin/caveman shrink -- gh *",
+      "/Users/sivantha/.nvm/versions/node/v26.12.1/bin/node /Users/sivantha/.nvm/versions/node/v26.12.1/bin/caveman shrink -- ./bin/sous *"
+    ]
+  }
+}

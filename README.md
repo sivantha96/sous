@@ -107,6 +107,8 @@ The guard checks commands by name, so `node -e "fetch(…)"` from the main sessi
 - **Environment:** `GH_TOKEN` and `GITHUB_TOKEN` are withheld.
 
 `./bin/sous` and `gh` run outside the sandbox (`excludedCommands`): they are the only programs that hold the token. The guard limits `gh` to reads and github.com.
+- **One call each.** The sandbox lets a call out only when every command in it is excluded, so `gh … | jq` or `cd x && ./bin/sous due` runs sandboxed and can't sign in. The guard refuses those with that reason.
+- **Command-rewriting hooks.** Claude Code matches exclusions against the command after hooks rewrite it. Sous's settings set `CAVEMAN_NATIVE_PROFILE=record-only`, so caveman's shrink hook leaves commands alone here, and exclude `rtk gh *` for rtk's rewrite. Another hook that rewrites commands needs the same: its off switch in `env`, or its rewritten form in `excludedCommands`.
 
 Claude Code ignores a folder's project settings until the folder is trusted. Open Claude Code in this folder once and accept the trust prompt, then check the sandbox with this headless run:
 
@@ -114,7 +116,7 @@ Claude Code ignores a folder's project settings until the folder is trusted. Ope
 printf '%s\n' "Run each command in its own Bash call and print its output: 1) node -e \"fetch('https://example.com').then(r=>console.log(r.status)).catch(e=>console.log('BLOCKED'))\" 2) gh api user -q .login 3) touch ~/sandbox-probe.txt" | claude -p --model haiku --permission-mode dontAsk --allowedTools Bash
 ```
 
-Expected: 1 prints `BLOCKED`, 2 prints your login, and 3 fails with "Operation not permitted".
+Expected: 1 prints `BLOCKED`, 2 prints your login, and 3 fails with "Operation not permitted". When 2 can't read `~/.config/gh`, a hook rewrote the command: see the bullet above.
 
 ## Who holds what
 
