@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config, type Profile } from './config.ts';
 import { checkOutbound, ensureCanaries, otherOrgTerms } from './outbound.ts';
+import { hiddenInDiff, stripHidden } from './hidden.ts';
 import { findDue, patchId } from './due.ts';
 import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
 import { get, getAll, ghFor, send, whoami } from './gh.ts';
@@ -221,7 +222,41 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
     const { stdout: baseFiles } = await run('git', ['ls-tree', '--name-only', `origin/${base}`], { cwd: clone });
     const conventions = CONVENTION_FILES.filter((f) => baseFiles.split('\n').includes(f));
-    print({ tree, baseRef: `origin/${base}`, readInstructionsWith: `git -C ${clone} show origin/${base}:<path>`, baseConventions: conventions, excludedFromCheckout: AI_CONFIG });
+    const { stdout: diff } = await run('git', ['diff', '-U0', '--no-ext-diff', `origin/${base}...${head}`], { cwd: clone, maxBuffer: 256 * 1024 * 1024 });
+    print({ tree, baseRef: `origin/${base}`, readInstructionsWith: `git -C ${clone} show origin/${base}:<path>`, baseConventions: conventions, excludedFromCheckout: AI_CONFIG, hiddenCharacters: hiddenInDiff(diff) });
+    return 0;
+  },
+
+  /**
+   * The PR's own words (title, body, reviews, comments) with hidden text removed, for the
+   * gatherer's `.pr-text.md`. Replay passes --before and --exclude so the answers stay out.
+   */
+  async prtext(args) {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { before: { type: 'string' }, exclude: { type: 'string' } } });
+    const [org, repo, n] = positionals;
+    if (!org || !repo || !n) throw new Error('usage: sous prtext <org> <owner/repo> <number> [--before <iso>] [--exclude <login>]');
+    const gh = await ghFor(loadProfile(org).ghAccount);
+    type C = { user: { login: string } | null; body: string | null; created_at?: string; submitted_at?: string; path?: string; line?: number | null };
+    const pull = await get<{ title: string; body: string | null; labels: { name: string }[] }>(gh, `repos/${repo}/pulls/${n}`);
+    const keep = (c: C) => c.user?.login !== values.exclude && (!values.before || (c.created_at ?? c.submitted_at ?? '') < values.before);
+    const sources: [string, C[]][] = [
+      ['Conversation', await getAll<C>(gh, `repos/${repo}/issues/${n}/comments?per_page=100`)],
+      ['Review bodies', (await getAll<C>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`)).filter((r) => r.body)],
+      ['Inline comments', await getAll<C>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`)],
+    ];
+    let removed = 0;
+    const clean = (t: string | null): string => {
+      const r = stripHidden(t ?? '');
+      removed += r.removed;
+      return r.text.trim();
+    };
+    const parts = [`# ${clean(pull.title)}`, `Labels: ${pull.labels.map((l) => l.name).join(', ') || 'none'}`, clean(pull.body) || '(no description)'];
+    for (const [heading, items] of sources) {
+      const shown = items.filter(keep);
+      if (shown.length) parts.push(`## ${heading}`, ...shown.map((c) => `- ${c.user?.login ?? 'ghost'}${c.path ? ` on ${c.path}:${c.line ?? '?'}` : ''}${hasMarker(c.body) ? ' (Sous)' : ''}: ${clean(c.body).replace(/\n/g, '\n  ')}`));
+    }
+    parts.push(`Hidden content removed: ${removed} item(s).`);
+    console.log(parts.join('\n\n'));
     return 0;
   },
 
@@ -639,7 +674,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const files = (await getAll<{ filename: string; patch?: string }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).filter((f) => !isNoise(f.filename));
     const bullets = memoryBullets(org);
     const hits = searchMemory(bullets, files.map((f) => f.filename), diffTerms(files));
-    print(hits.map((h) => ({ at: `${h.bullet.file}:${h.bullet.line}`, score: h.score, matchedBy: h.matchedBy, text: h.bullet.raw })));
+    print(hits.map((h) => ({ at: `${h.bullet.file}:${h.bullet.line}`, score: h.score, trust: h.bullet.trust, matchedBy: h.matchedBy, text: h.bullet.raw })));
     return 0;
   },
 

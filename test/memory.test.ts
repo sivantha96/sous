@@ -38,3 +38,15 @@ test('fact state and pinning', () => {
   assert.equal(factState({ path: 'a' }, 'def456'), 'unpinned');
   assert.equal(pinBullet('- fact. Proof: `a.ts`', [{ path: 'a.ts', sha: 'deadbeefcafe0000' }]), '- fact. (cite: a.ts@deadbeefcafe)');
 });
+
+test('candidates and teammate bullets rank below the lead rules at equal score', () => {
+  const rules = parseBullets('orgs/o/rules/seed.md', '- [scope: src/**] retries are capped at 3');
+  const cand = parseBullets('orgs/o/candidates/from-replies.md', '- [scope: src/**] retries may be unbounded (trust: teammate)');
+  const marked = parseBullets('orgs/o/rules/seed.md', '- [scope: src/**] something a teammate said (trust: teammate)');
+  assert.equal(rules[0]!.trust, 'lead');
+  assert.equal(cand[0]!.trust, 'candidate');
+  assert.equal(marked[0]!.trust, 'candidate');
+  assert.ok(!cand[0]!.text.includes('trust:'));
+  const hits = searchMemory([...cand, ...rules], ['src/a.ts'], []);
+  assert.deepEqual(hits.map((h) => h.bullet.trust), ['lead', 'candidate']);
+});

@@ -5,7 +5,7 @@ model: opus
 tools: Read, Write, Bash
 ---
 
-Input: the verifier's kept findings, and the org, repo, PR number and head sha.
+Input: the verifier's kept findings, and the org, repo, PR number and head sha. You never read the PR's `.pr-text.md`; the guard refuses it.
 
 1. Read `prompts/voice-base.md`, then `~/.sous/me/voice.md` (it wins where they differ), then `~/.sous/orgs/<org>/examples/` for how comments read in this org.
 2. Write each finding as one inline comment: short, simple English, the issue and the reason in a few words. High confidence is stated; medium names what is not known; low is a question.

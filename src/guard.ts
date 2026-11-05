@@ -27,7 +27,7 @@ export const roleOf = (agentType: string | undefined): Role => (agentType ? (ROL
 
 /** `sous` subcommands each role may run. Everything else in sous writes to GitHub or memory. */
 const SOUS: Record<Role, string[]> = {
-  reader: ['status', 'noise', 'checkout', 'gate', 'memory', 'facts', 'decisions', 'plan', 'links', 'stagekey', 'stats'],
+  reader: ['status', 'noise', 'checkout', 'gate', 'memory', 'facts', 'decisions', 'plan', 'links', 'stagekey', 'stats', 'prtext'],
   writer: ['status', 'noise', 'post', 'mark', 'memory', 'decisions'],
   'reply-judge': ['status', 'checkout', 'reply', 'resolve', 'seen', 'memory', 'facts'],
   reflector: ['status', 'leak-check', 'score', 'facts', 'memory', 'stats', 'tokens', 'stagekey', 'evalrun'],
@@ -200,9 +200,17 @@ export interface HookInput {
   cwd?: string;
 }
 
+/**
+ * The verifier and writer judge findings against the code, never the PR's own words: a judge that
+ * reads the author's text can be addressed by it. They are refused the gatherer's PR-text file.
+ */
+const BLIND = new Set(['verifier', 'writer']);
+const PR_TEXT = /\.pr-text\.md\b/;
+
 export function decide(input: HookInput): Verdict {
   const role = roleOf(input.agent_type);
   const cwd = input.cwd ?? process.cwd();
+  if (input.agent_type && BLIND.has(input.agent_type) && PR_TEXT.test(JSON.stringify(input.tool_input))) return no('the verifier and writer never read the PR text; judge from the code and the findings');
   if (input.tool_name === 'Bash') return checkCommand(input.tool_input.command ?? '', role, cwd);
   if (['Read', 'Grep', 'Glob'].includes(input.tool_name)) return checkPath(input.tool_input.file_path ?? input.tool_input.path, role, cwd);
   if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(input.tool_name)) return checkWrite(input.tool_input.file_path ?? input.tool_input.notebook_path, role, cwd);

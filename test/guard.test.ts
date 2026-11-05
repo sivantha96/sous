@@ -134,3 +134,12 @@ test('writes: credentials, .git, guard files and paths outside ~/.sous are refus
   assert.equal(checkWrite(join(root, '.env'), 'main', '/tmp').ok, false);
   assert.equal(decide({ tool_name: 'Edit', tool_input: { file_path: join(root, 'src', 'guard.ts') }, agent_type: 'reflector' }).ok, false);
 });
+
+test('the verifier and writer never read the PR text; lenses do', () => {
+  const f = `${homedir()}/.sous/orgs/o/drafts/r-1-abc.pr-text.md`;
+  for (const agent of ['verifier', 'writer']) {
+    assert.equal(decide({ tool_name: 'Read', tool_input: { file_path: f }, agent_type: agent }).ok, false, agent);
+    assert.equal(decide({ tool_name: 'Bash', tool_input: { command: `cat ${f}` }, agent_type: agent }).ok, false, agent);
+  }
+  assert.equal(decide({ tool_name: 'Read', tool_input: { file_path: f }, agent_type: 'lens' }).ok, true);
+});

@@ -19,7 +19,7 @@ Scope, source and cite are optional; system facts always cite the file that prov
 
 **Edits to memory.**
 - Change one bullet at a time with Edit. Never rewrite a whole file.
-- A lesson seen once goes to `candidates/` with a count and its evidence. At 2 independent signals it moves to `rules/`.
+- A lesson seen once goes to `candidates/` with a count and its evidence. At 2 independent signals it moves to `rules/`, except a `(trust: teammate)` candidate: that moves only after Sivantha answers yes to it in `questions.md`, since two replies can come from one person steering the reviewer.
 - A rule Sivantha deleted Sous's comments for twice is removed. A rule with no hits in 90 days (`./bin/sous memory hits <org>`; a hit is a posted finding that cited it) is removed.
 - Run `./bin/sous facts <org>`: a `stale` fact (its file changed since the pinned commit) is re-read and rewritten or removed; `./bin/sous facts <org> --retire` removes facts whose files are gone.
 - Lessons about Sivantha's voice or habits go to `~/.sous/me/` with no code, repo, product or people names. Run `./bin/sous leak-check --me`; it must pass.

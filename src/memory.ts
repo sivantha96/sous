@@ -5,7 +5,12 @@
  *   - [scope: services/api/**, packages/**] the rule or fact (source: core#136 comment) (cite: owner/repo:path@sha12)
  *
  * Scope, source and cite are optional. "Proof: `a`, `b`" is read as unpinned citations, for older bullets.
+ *
+ * Trust: a bullet under `candidates/`, or one marked `(trust: teammate)`, is a candidate: it came
+ * from a reply or an inference nobody confirmed. It ranks below the lead's rules at equal score
+ * and never overrides one; a lens may cite it but not post a major on it alone.
  */
+export type Trust = 'lead' | 'candidate';
 export interface Cite {
   repo?: string;
   path: string;
@@ -19,12 +24,14 @@ export interface Bullet {
   text: string;
   source?: string;
   cites: Cite[];
+  trust: Trust;
   raw: string;
 }
 
 const CITE = /\(cite: ([^)]+)\)/;
 const SOURCE = /\(source: ([^)]+)\)/;
 const SCOPE = /^- \[(?:scope: )?([^\]]+)\]\s*/;
+const TRUST = /\(trust: (\w+)\)/;
 
 function parseCite(s: string): Cite | null {
   const m = /^(?:([\w.-]+\/[\w.-]+):)?([^@\s]+?)(?:@([0-9a-f]{7,40}))?$/.exec(s.trim().replace(/^`|`$/g, ''));
@@ -40,9 +47,11 @@ export function parseBullets(file: string, content: string): Bullet[] {
       ...(CITE.exec(raw)?.[1]?.split(',') ?? []),
       ...(/Proof: (.+)$/.exec(raw)?.[1]?.match(/`[^`]+`/g) ?? []),
     ].flatMap((c) => parseCite(c) ?? []);
-    const text = raw.replace(SCOPE, '').replace(CITE, '').replace(SOURCE, '').replace(/^- /, '').trim();
+    const text = raw.replace(SCOPE, '').replace(CITE, '').replace(SOURCE, '').replace(TRUST, '').replace(/^- /, '').trim();
     const source = SOURCE.exec(raw)?.[1];
-    return [{ file, line: i + 1, scope, text, ...(source ? { source } : {}), cites, raw }];
+    const marked = TRUST.exec(raw)?.[1];
+    const trust: Trust = marked ? (marked === 'lead' ? 'lead' : 'candidate') : /(^|\/)candidates\//.test(file) ? 'candidate' : 'lead';
+    return [{ file, line: i + 1, scope, text, ...(source ? { source } : {}), cites, trust, raw }];
   });
 }
 
@@ -94,7 +103,8 @@ export function searchMemory(bullets: Bullet[], paths: string[], terms: string[]
     }
     if (score > 0) hits.push({ bullet: b, score, matchedBy });
   }
-  return hits.sort((a, b) => b.score - a.score || a.bullet.file.localeCompare(b.bullet.file) || a.bullet.line - b.bullet.line).slice(0, limit);
+  const rank = (h: Hit): number => (h.bullet.trust === 'lead' ? 0 : 1);
+  return hits.sort((a, b) => b.score - a.score || rank(a) - rank(b) || a.bullet.file.localeCompare(b.bullet.file) || a.bullet.line - b.bullet.line).slice(0, limit);
 }
 
 export type FactState = 'current' | 'stale' | 'gone' | 'unpinned';

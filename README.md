@@ -26,7 +26,8 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 |---|---|
 | `sous due` | Finds PRs due in every org, reads CodeRabbit's state, picks this run's PRs (capped by `maxReviewsPerRun`). No model tokens |
 | `sous gate` | Waits for CodeRabbit on one PR, polling every 3 minutes |
-| `sous checkout` | Read-only worktree of a PR head, without `.claude/`, `.mcp.json` and other AI-config paths (their changes are reviewed from the diff, their base copies read with `git show`) |
+| `sous checkout` | Read-only worktree of a PR head, without `.claude/`, `.mcp.json` and other AI-config paths (their changes are reviewed from the diff, their base copies read with `git show`). Also lists added lines that carry invisible or bidi characters (`hiddenCharacters`) |
+| `sous prtext` | The PR's title, body, reviews and comments with HTML comments and invisible characters removed, for the gatherer's `.pr-text.md`. The guard keeps the verifier and writer from reading that file |
 | `sous noise` | Prints which paths are lockfiles or generated output |
 | `sous plan` | Risk score, drivers, lenses, the missed pass and file order, from the changed paths alone (no model call) |
 | `sous memory` | Memory bullets for a PR, by scope and by the names the diff touches, ranked; `sous memory hits <org>` shows when each bullet last drove a posted finding |
@@ -69,6 +70,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 - Paused orgs and orgs in draft mode get pending reviews.
 - Dismisses only its own reviews: posted by your account, carrying the Sous marker, and recorded in state.
 - Text that fails the voice lint is never posted.
+- Memory bullets under `candidates/`, or marked `(trust: teammate)`, rank below the lead's rules and never override one. A teammate's candidate becomes a rule only after Sivantha says yes in `questions.md`.
 - Every comment, reply and dismissal passes `src/outbound.ts` first. Any of these is refused: a name from another watched org, the canary line `sous` keeps at the top of every memory file, a link outside `github.com/<org>/` and the profile's `linkHosts`, or a link with a query string.
 - `sous post` posts only to an open PR in a watched org that asked for your review or that Sous reviewed before. It posts at most `maxCommentsPerReview` comments (default 10).
 - `.claude/settings.json` blocks agents from writing to GitHub except through `sous`.
