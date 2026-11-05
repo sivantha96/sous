@@ -45,9 +45,10 @@ export class LintError extends Error {
 
 export function buildReview(
   d: Draft,
-  opts: { pending: boolean; attribution: string; files: { filename: string; patch?: string }[] },
+  opts: { pending: boolean; attribution: string; files: { filename: string; patch?: string }[]; suggestions?: boolean },
 ): ReviewPayload {
   const problems = d.findings.flatMap((f) => lintFinding(f).map((p) => `${f.path}:${f.line}: ${p}`));
+  if (!opts.suggestions) for (const f of d.findings.filter((f) => f.severity === 'suggestion')) problems.push(`${f.path}:${f.line}: suggestions are off for this org; leave them out (they still count in evals)`);
   for (const f of d.findings.filter((f) => f.owner)) problems.push(`${f.path}:${f.line}: owner decision; it goes to questions.md, never the PR`);
   if (d.findings.length === 0) problems.push('no findings; record the head with `sous mark` instead');
   if (!/^[0-9a-f]{40}$/.test(d.head)) problems.push('head is not a full commit sha');

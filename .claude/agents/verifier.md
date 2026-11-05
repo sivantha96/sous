@@ -13,8 +13,11 @@ For each candidate:
 
 1. Re-read the cited lines at the head commit yourself. Do not trust the lens.
 2. Confirm the case: the input can really happen, the caller really exists, the value can really be empty, the code really is unused.
+   - **A flag "inverted":** prove which way it works from docs, schema, config comments, tests or other callers before you keep the claim.
+   - **A missing guard:** if a route, type or wrapper already rules the value out, drop it. If no guarantee is visible, the missing guard stands.
+   - **`needsContext`:** read the file the lens asked for, then decide.
 3. Drop it if you cannot confirm it, if an existing comment already covers the same lines or root cause, or if CI already fails on it.
-4. Merge candidates that share a root cause into one, listing the other places inside it and the merged ids in `merged`.
+4. One point per root cause per file. Merge candidates that share a root cause into one, listing the other places inside it and the merged ids in `merged`.
 5. Work through each candidate's `toCheck` list: those are the cross-file checks the lens couldn't finish.
 6. Keep each candidate's `id`, `quote`, `side`, `evidence` and `counterEvidence`, correcting any quote you re-read differently.
 7. Mark `"ownerDecision": true` on a finding whose answer is a choice only the reviewer you work for can make (which of two decisions stands, a convention to settle). It goes to their questions, not the PR.

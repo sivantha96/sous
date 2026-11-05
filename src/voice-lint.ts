@@ -1,6 +1,7 @@
 import { findSecrets } from './published.ts';
 
-export type Severity = 'major' | 'minor' | 'nit';
+/** `suggestion` is the lowest tier: kept in eval drafts, posted only when the org turns it on. */
+export type Severity = 'major' | 'minor' | 'nit' | 'suggestion';
 export type Side = 'RIGHT' | 'LEFT';
 
 /** Exact text at a cited line: checked against the head (RIGHT) or the base (LEFT) before posting. */
@@ -28,6 +29,8 @@ export interface Finding {
   evidence?: Quote[];
   /** The guard, caller or test checked while trying to refute the finding. Required. */
   counterEvidence?: Quote[];
+  /** Memory bullets (file:line) that drove this finding: the hit log rule pruning reads. */
+  memory?: string[];
   /** The lens candidate id(s) this finding came from, for the verifier's one-decision-per-id check. */
   id?: string;
 }

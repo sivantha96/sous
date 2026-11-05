@@ -23,6 +23,8 @@ export interface Profile {
   knowledgeGraph: { mcp: string } | null;
   /** Paths (repo/path) whose base-branch copies hold the org's rules. */
   ruleSources: string[];
+  /** Post the lowest tier too. Off until the replay shows Sivantha makes such points. */
+  postSuggestions: boolean;
 }
 
 const configPath = (): string => join(sousHome(), 'config.json');
@@ -55,6 +57,7 @@ export function loadProfile(org: string): Profile {
     coderabbit: p.coderabbit ?? null,
     knowledgeGraph: p.knowledgeGraph ?? null,
     ruleSources: p.ruleSources ?? [],
+    postSuggestions: p.postSuggestions ?? false,
   };
 }
 

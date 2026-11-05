@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config } from './config.ts';
@@ -13,6 +13,7 @@ import { buildReview, dismissOwn, hasMarker, LintError, marker, postReview, sign
 import { commitAt, gateFails, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
 import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
+import { codeLinks, plan } from './plan.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
 import { emptyPr, loadState, logEvent, prKey, saveState } from './state.ts';
 
@@ -100,6 +101,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       coderabbit: coderabbit ? { login: 'coderabbitai[bot]', checkName: 'CodeRabbit' } : null,
       knowledgeGraph: existing?.knowledgeGraph ?? null,
       ruleSources: existing?.ruleSources ?? [],
+      postSuggestions: existing?.postSuggestions ?? false,
     });
     await refreshDenylist(org, account);
     await baseline(org, account);
@@ -255,7 +257,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
     let payload;
     try {
-      payload = buildReview({ ...draft, findings: keep }, { pending, attribution: config.attribution, files });
+      payload = buildReview({ ...draft, findings: keep }, { pending, attribution: config.attribution, files, suggestions: profile.postSuggestions });
     } catch (e) {
       if (e instanceof LintError) logEvent(draft.org, 'lint-refused', { pr: key, problems: e.problems });
       throw e;
@@ -269,7 +271,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
     state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, reviewId], commentIds: [...prev.commentIds, ...commentIds] };
     saveState(draft.org, state);
-    logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: keep.map((f) => ({ severity: f.severity, path: f.path, line: f.line, id: f.id })) });
+    logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: keep.map((f) => ({ severity: f.severity, path: f.path, line: f.line, id: f.id, memory: f.memory ?? [] })) });
     print({ pr: key, reviewId, event: payload.event ?? 'PENDING', comments: commentIds.length, dropped });
     return 0;
   },
@@ -500,6 +502,72 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     appendLine(log, { at: new Date().toISOString(), label: values.label ?? '', ...now, accepted });
     print({ ...now, baseline, fails, accepted, perCase: scores });
     return values.gate && fails.length ? 1 : 0;
+  },
+
+  /** How deep to review: lenses, the missed pass and risk drivers, from the changed paths alone. */
+  async plan(args) {
+    const [org, repo, n] = args;
+    if (!org || !repo || !n) throw new Error('usage: sous plan <org> <owner/repo> <number>');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const pull = await get<{ base: { ref: string }; head: { repo: { default_branch: string } | null } }>(gh, `repos/${repo}/pulls/${n}`);
+    const files = (await getAll<{ filename: string; additions: number; deletions: number }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).filter((f) => !isNoise(f.filename));
+    const stacked = pull.base.ref !== (pull.head.repo?.default_branch ?? 'main');
+    print(plan(files, { stacked, orgRules: profile.ruleSources.length > 0 }));
+    return 0;
+  },
+
+  /**
+   * Freezes code the PR body and its linked issues point to, pinned to a commit, as evidence.
+   * Never copies a private repo's code into a review of a public repo.
+   */
+  async links(args) {
+    const [org, repo, n] = args;
+    if (!org || !repo || !n) throw new Error('usage: sous links <org> <owner/repo> <number>');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const pull = await get<{ body: string | null }>(gh, `repos/${repo}/pulls/${n}`);
+    const prRepo = await get<{ private: boolean }>(gh, `repos/${repo}`);
+    let text = pull.body ?? '';
+    for (const m of text.matchAll(/(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?|refs?)\s+#(\d+)/gi)) {
+      text += `\n${(await get<{ body: string | null }>(gh, `repos/${repo}/issues/${m[1]}`).catch(() => ({ body: '' }))).body ?? ''}`;
+    }
+    const dir = join(orgDir(org), 'drafts', `${repo.split('/')[1]}-${n}-links`);
+    mkdirSync(dir, { recursive: true });
+    const saved: { link: string; sha: string; file: string }[] = [];
+    const skipped: { link: string; why: string }[] = [];
+    for (const l of codeLinks(text).slice(0, 10)) {
+      const link = `${l.owner}/${l.repo}@${l.ref}:${l.path}`;
+      const target = await get<{ private: boolean }>(gh, `repos/${l.owner}/${l.repo}`).catch(() => null);
+      if (!target) {
+        skipped.push({ link, why: 'repo not readable' });
+        continue;
+      }
+      if (target.private && !prRepo.private) {
+        skipped.push({ link, why: 'private code is never copied into a public repo review' });
+        continue;
+      }
+      // A ref with slashes (a branch like agent/x) is tried at each split point.
+      const parts = `${l.ref}/${l.path}`.split('/');
+      let done = false;
+      for (let i = 1; i < parts.length && !done; i++) {
+        const ref = parts.slice(0, i).join('/');
+        const path = parts.slice(i).join('/');
+        const commit = await get<{ sha: string }>(gh, `repos/${l.owner}/${l.repo}/commits/${encodeURIComponent(ref)}`).catch(() => null);
+        if (!commit) continue;
+        const content = await get<{ content?: string; encoding?: string }>(gh, `repos/${l.owner}/${l.repo}/contents/${path}?ref=${commit.sha}`).catch(() => null);
+        if (!content?.content) continue;
+        const lines = Buffer.from(content.content, 'base64').toString('utf8').split('\n');
+        const [from, to] = l.lines ?? [1, lines.length];
+        const file = join(dir, `${l.owner}__${l.repo}__${path.replaceAll('/', '__')}@${commit.sha.slice(0, 12)}`);
+        writeFileSync(file, lines.slice(Math.max(0, from - 21), to + 20).map((t, k) => `${Math.max(1, from - 20) + k}\t${t}`).join('\n'));
+        saved.push({ link, sha: commit.sha, file });
+        done = true;
+      }
+      if (!done) skipped.push({ link, why: 'ref or path not found' });
+    }
+    print({ saved, skipped });
+    return 0;
   },
 
   /** Prints which of the given paths are noise (lockfiles, generated output), one per line. */

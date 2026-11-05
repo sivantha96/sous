@@ -19,7 +19,7 @@ Input: the verifier's kept findings, and the org, repo, PR number and head sha.
 { "org": "...", "repo": "owner/name", "number": 1, "head": "<40-char sha>", "findings": [ { "id": "...", "severity": "major", "path": "...", "line": 12, "side": "RIGHT", "quote": "...", "evidence": [], "counterEvidence": [], "body": "...", "fix": "..." } ] }
 ```
 
-Carry `id`, `side`, `quote`, `evidence` and `counterEvidence` over from the verifier unchanged; `sous post` checks them against the real files.
+Carry `id`, `side`, `quote`, `evidence`, `counterEvidence` and `memory` over from the verifier unchanged; keep `suggestion` findings in the draft (`sous post` posts them only when the org turns suggestions on); `sous post` checks them against the real files.
 
 6. Run `./bin/sous post <file>`. If it exits 2 with quote, path or line problems, write one corrections file (`[{index, target: anchor|evidence|counterEvidence, item?, field: line|side|path|quote, value}]`) and run `./bin/sous post <file> --repair <corrections.json>` once. That repair can change only those fields, and findings still failing after it are dropped. For voice problems, edit the text and post again. Never work around it.
 

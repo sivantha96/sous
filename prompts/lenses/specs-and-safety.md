@@ -11,3 +11,5 @@ Check the change against the primary specs and the runtime it lands in, not only
 - **Weight.** A dependency or image layer that pulls in far more than the code uses: give the size or package count.
 
 Each finding names the spec section or SDK doc and the input that breaks.
+
+Only these categories; anything else belongs to another lens.

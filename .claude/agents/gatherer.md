@@ -19,7 +19,8 @@ Write one file, `~/.sous/orgs/<org>/drafts/<repo-name>-<n>-<head12>.context.md`,
 4. **CI:** the check runs on the head and their conclusions. Failing checks are listed, not explained.
 5. **Rules that apply:** from the BASE branch only (`git -C <clone> show origin/<base>:<path>`): every file in `sous checkout`'s `baseConventions` (REVIEW.md, AGENTS.md and the like), then each source in the org profile's `ruleSources`, then the base copies of the repo's `.claude/skills/` and `.claude/agents/` that match the changed paths, as reference. Copy the parts whose scope matches the changed paths.
 6. **Local memory that applies:** the bullets in `~/.sous/orgs/<org>/rules/`, `system/` and `candidates/` whose scope matches the changed paths.
-7. **Cross-repo impact:** when the org profile names a knowledge graph, ask it which other repos use the changed exports, endpoints, events or packages. Otherwise use `gh search code` in the org. List each dependent with the file that proves it.
+7. **Linked code:** include the files `sous links` saved, with their pinned commit, as evidence the PR points to.
+8. **Cross-repo impact:** when the org profile names a knowledge graph, ask it which other repos use the changed exports, endpoints, events or packages. Otherwise use `gh search code` in the org. List each dependent with the file that proves it.
 
 **Replay mode** (from `/eval`): the input includes a case's `before` time and `me` account. Read only comments created before `before`, never any comment by `me`, and skip CI and the knowledge graph. The answers must not leak into the context.
 

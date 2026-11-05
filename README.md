@@ -28,6 +28,8 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `sous gate` | Waits for CodeRabbit on one PR, polling every 3 minutes |
 | `sous checkout` | Read-only worktree of a PR head, without `.claude/`, `.mcp.json` and other AI-config paths (their changes are reviewed from the diff, their base copies read with `git show`) |
 | `sous noise` | Prints which paths are lockfiles or generated output |
+| `sous plan` | Risk score, drivers, lenses, the missed pass and file order, from the changed paths alone (no model call) |
+| `sous links` | Freezes code the PR body and linked issues point to, pinned to a commit; never copies private code into a public repo review |
 | `sous post` | The only way a review leaves the machine. Adopts an earlier post on the same head; checks every anchor, evidence and counter-evidence quote against the real files (moving a miscounted line within 3, completing a shortened path); drops points Sous already made; allows one `--repair` limited to line, side, path and quote; posts inline comments only, on added or removed lines, with the attribution and marker; COMMENT or REQUEST_CHANGES, never APPROVE; gives back your review request |
 | `sous decisions` | Fails unless every lens candidate id has exactly one verifier decision |
 | `sous mark` | Records a head reviewed with nothing to post; needs the verifier result (`--verified`) |
