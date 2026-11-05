@@ -25,7 +25,7 @@ import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { diffTerms, factState, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
-import { emptyPr, loadState, logEvent, prKey, readEvents, saveState } from './state.ts';
+import { emptyPr, loadState, logEvent, prKey, readEvents, releaseLock, saveState, takeLock } from './state.ts';
 
 const run = promisify(execFile);
 
@@ -150,11 +150,20 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   },
 
   async due(args) {
-    const { values } = parseArgs({ args, options: { org: { type: 'string' } } });
+    const { values } = parseArgs({ args, options: { org: { type: 'string' }, lock: { type: 'string' } } });
     const config = loadConfig();
+    if (values.org && !config.orgs.includes(values.org)) throw new Error(`${values.org} is not a watched org; run \`sous org add ${values.org}\``);
     const started = new Date();
     const out = [];
     for (const org of values.org ? [values.org] : config.orgs) {
+      // --lock <session>: skip an org another run is still working on.
+      if (values.lock) {
+        const lock = takeLock(org, values.lock, started);
+        if (!lock.ok) {
+          out.push({ org, locked: `another run (session ${lock.heldBy}) has held this org since ${lock.since}`, due: [], skipped: [] });
+          continue;
+        }
+      }
       const profile = loadProfile(org);
       // Preflight: an org whose gh account can't sign in is blocked for this run, never guessed at.
       let gh: Awaited<ReturnType<typeof ghFor>>;
@@ -187,6 +196,14 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     let budget = config.maxReviewsPerRun;
     const take = out.flatMap((o) => o.due.filter((d) => d.gate.action !== 'defer')).filter(() => budget-- > 0);
     print({ take: take.map((d) => ({ ...d, paused: isPaused(config, d.org) })), orgs: out });
+    return 0;
+  },
+
+  /** Releases the run lock `sous due --lock` took, when this session holds it. */
+  async unlock(args) {
+    const [org, session] = args;
+    if (!org || !session) throw new Error('usage: sous unlock <org> <session>');
+    print({ org, released: releaseLock(org, session) });
     return 0;
   },
 

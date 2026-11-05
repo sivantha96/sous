@@ -4,7 +4,7 @@ import type { Usage } from './usage.ts';
 /**
  * The last run, for the learning round: what went wrong, what it cost and how long it took, next
  * to the median of the runs before it. A run is every event from its start time on; its cost is the
- * `usage` event `/run` logs with the label `run`.
+ * `usage` event `/run` logs with the label `run`, or `/review` with `review`.
  */
 const PROBLEMS = new Set(['lint-refused', 'outbound-refused', 'blocked', 'skipped', 'deferred', 'dropped', 'rebase-skip', 'request-not-restored']);
 
@@ -27,7 +27,8 @@ interface RunUsage {
 
 export function retro(events: LoggedEvent[], since: string, history = 10) {
   const run = events.filter((e) => e.at >= since);
-  const isRunUsage = (e: LoggedEvent) => e.type === 'usage' && e.label === 'run';
+  // A hand review (`/review`) logs `review`; both are runs here, so its cost is reviewed too.
+  const isRunUsage = (e: LoggedEvent) => e.type === 'usage' && (e.label === 'run' || e.label === 'review');
   const usage = run.filter(isRunUsage) as (LoggedEvent & RunUsage)[];
   const past = (events.filter((e) => isRunUsage(e) && e.at < since) as (LoggedEvent & RunUsage)[]).slice(-history);
   const byAgent: Record<string, { paidTokens: number; seconds: number }> = {};
