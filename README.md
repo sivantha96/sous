@@ -47,7 +47,8 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `sous evalrun` | Starts an eval: one run folder per repeat with the cases, engine commit, prompt hash and memory commit; refuses past the daily budget (`evalBudgetPerDay`) |
 | `sous score` | Scores eval runs: every listed case counts (a missing draft scores zero), repeats are averaged, and each case shows points lenses came near against points kept; `--gate` fails on a drop, `--accept` sets the baseline |
 | `sous bench import` | Turns a benchmark file you supply into cases in a separate `bench` org |
-| `sous tokens` | Token use per subagent and model for a session, from Claude Code transcripts; `--org` logs it |
+| `sous tokens` | Token use and running time per subagent and model for a session, from Claude Code transcripts; `--org` logs it |
+| `sous retro` | The last run for the learning round: its reviews, problems (refusals, skips, blocks, deferrals), paid tokens and minutes, next to the median of the 10 runs before it. No model tokens |
 | `sous stagekey` | Cache key for one eval stage (same head, prompts and memory, same key), so reruns reuse it |
 | `sous stats` | Reviews, findings, refusals, drops, replies and tokens from the event log; `/stats` answers questions from it |
 | `sous pause [org]` / `resume [org]` | Stops posting; reviews become pending drafts |
@@ -63,7 +64,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `signal-collector` | Haiku | What changed since the last learning round |
 | `match-judge` | Haiku | In `/eval`, pairs your points with Sous findings that make the same point anywhere |
 | `reply-judge` | Sonnet, Opus for hard cases | Weighs teammates' replies and reactions: adopts, withdraws, answers once, or asks you |
-| `reflector` | Opus | Memory edits behind the replay gate, engine PRs, questions for you |
+| `reflector` | Opus | Reviews the run (problems, tokens and time against recent runs) and the signals: memory edits behind the replay gate, engine PRs, questions for you. Skipped when a run had no signals, no problems and a normal cost |
 
 ## Rules this code enforces
 

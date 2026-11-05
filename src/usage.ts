@@ -55,3 +55,21 @@ export function mergeUsage(into: Record<string, Usage>, from: Record<string, Usa
   }
   return into;
 }
+
+/** Seconds from a transcript's first to last timestamped line: how long that agent ran. */
+export function spanSeconds(jsonl: string): number {
+  let first = Infinity;
+  let last = -Infinity;
+  for (const line of jsonl.split('\n')) {
+    let t: number;
+    try {
+      t = Date.parse((JSON.parse(line) as { timestamp?: string }).timestamp ?? '');
+    } catch {
+      continue;
+    }
+    if (Number.isNaN(t)) continue;
+    first = Math.min(first, t);
+    last = Math.max(last, t);
+  }
+  return last > first ? Math.round((last - first) / 1000) : 0;
+}

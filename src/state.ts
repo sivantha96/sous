@@ -1,3 +1,4 @@
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendLine, orgDir, readJson, writeJson } from './home.ts';
 
@@ -46,4 +47,15 @@ export type EventType = 'reviewed' | 'deferred' | 'dismissed' | 'skipped' | 'lin
 /** One append-only log every metric reads from. */
 export function logEvent(org: string, type: EventType, data: Record<string, unknown>): void {
   appendLine(join(orgDir(org), 'events.jsonl'), { at: new Date().toISOString(), type, ...data });
+}
+
+export interface LoggedEvent {
+  at: string;
+  type: EventType;
+  [key: string]: unknown;
+}
+
+export function readEvents(org: string): LoggedEvent[] {
+  const log = join(orgDir(org), 'events.jsonl');
+  return existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as LoggedEvent) : [];
 }
