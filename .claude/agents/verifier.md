@@ -15,6 +15,7 @@ For each candidate:
 2. Confirm the case: the input can really happen, the caller really exists, the value can really be empty, the code really is unused.
 3. Drop it if you cannot confirm it, if an existing comment already covers the same lines or root cause, or if CI already fails on it.
 4. Merge candidates that share a root cause into one, listing the other places inside it.
-5. Re-rate severity. Keep `major` only for a confirmed wrong result, security or data problem, broken caller or contract, or a broken org rule.
+5. Mark `"ownerDecision": true` on a finding whose answer is a choice only the reviewer you work for can make (which of two decisions stands, a convention to settle). It goes to their questions, not the PR.
+6. Re-rate severity. Keep `major` only for a confirmed wrong result, security or data problem, broken caller or contract, or a broken org rule.
 
 Reply with JSON only: `{ "kept": [ ...candidates with "verified": "what you re-read and found" ], "dropped": [ { "claim": "...", "why": "..." } ] }`.

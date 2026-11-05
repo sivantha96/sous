@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildReview, dismissOwn, hasMarker, LintError, type Draft } from '../src/post.ts';
+import { buildReview as build, dismissOwn, hasMarker, LintError, rightLines, type Draft } from '../src/post.ts';
 import type { Gh } from '../src/gh.ts';
 
 const head = 'a'.repeat(40);
-const draft = (findings: Draft['findings']): Draft => ({ org: 'o', repo: 'o/r', number: 1, head, summary: '## AI review\n\nTwo points.', findings });
+const draft = (findings: Draft['findings']): Draft => ({ org: 'o', repo: 'o/r', number: 1, head, findings });
+const files = [{ filename: 'src/a.ts', patch: '@@ -1,2 +1,10 @@\n a\n+b\n+c\n+d\n+e\n+f\n+g\n+h\n+i\n+j' }];
+const buildReview = (d: Draft, o: { pending: boolean }) => build(d, { ...o, attribution: "From Sam's AI reviewer", files });
 const major = { severity: 'major' as const, path: 'src/a.ts', line: 3, body: 'this throws on an empty list', fix: 'return early when the list is empty' };
 const nit = { severity: 'nit' as const, path: 'src/a.ts', line: 9, body: 'rename to `count`' };
 
@@ -17,21 +19,43 @@ test('paused or draft mode leaves the review pending', () => {
   assert.equal(buildReview(draft([major]), { pending: true }).event, undefined);
 });
 
-test('every comment and the body carry the Sous marker', () => {
+test('no review body; every comment carries the Sous marker', () => {
   const p = buildReview(draft([major]), { pending: false });
-  assert.ok(hasMarker(p.body));
+  assert.equal(p.body, '');
   assert.ok(p.comments.every((c) => hasMarker(c.body)));
   assert.match(p.comments[0]!.body, /Fix: return early/);
 });
 
 test('voice lint refuses to post', () => {
   assert.throws(() => buildReview(draft([{ ...major, body: 'please fix this — it breaks' }]), { pending: false }), LintError);
-  assert.throws(() => buildReview(draft([{ ...major, fix: undefined }]), { pending: false }), /no fix/);
+});
+
+test('fix is optional; Fix: appears only when given', () => {
+  const p = buildReview(draft([{ ...major, fix: undefined }]), { pending: false });
+  assert.doesNotMatch(p.comments[0]!.body, /Fix:/);
+});
+
+test('every comment ends with the italic attribution', () => {
+  const p = buildReview(draft([major, nit]), { pending: false });
+  assert.ok(p.comments.every((c) => c.body.includes("_From Sam's AI reviewer_")));
+});
+
+test('a review with no findings is refused', () => {
+  assert.throws(() => buildReview(draft([]), { pending: false }), /sous mark/);
+});
+
+test('a comment on a line outside the diff is refused', () => {
+  assert.throws(() => buildReview(draft([{ ...major, line: 40 }]), { pending: false }), /not a line in the diff/);
+  assert.deepEqual([...rightLines('@@ -10,3 +10,3 @@\n keep\n-old\n+new\n keep')], [10, 11, 12]);
 });
 
 test('dismissOwn refuses a review Sous did not write', async () => {
-  const gh: Gh = async () => JSON.stringify({ id: 7, user: { login: 'me' }, state: 'CHANGES_REQUESTED', body: 'written by a person' });
-  await assert.rejects(dismissOwn(gh, 'o/r', 1, 7, 'me', [7], 'fixed in abc123'), /not a Sous review/);
-  const own: Gh = async () => JSON.stringify({ id: 7, user: { login: 'me' }, state: 'CHANGES_REQUESTED', body: '<!-- sous:aaaaaaaaaaaa -->' });
-  await assert.rejects(dismissOwn(own, 'o/r', 1, 7, 'me', [], 'fixed'), /not a Sous review/);
+  const fake = (review: object, comments: object[]): Gh => async (args) => JSON.stringify(args[1]!.includes('/comments') ? comments : review);
+  const sous = [{ body: 'x\n\n<!-- sous:aaaaaaaaaaaa -->' }];
+  // A person's review: no marker anywhere.
+  await assert.rejects(dismissOwn(fake({ user: { login: 'me' }, state: 'CHANGES_REQUESTED', body: '' }, [{ body: 'mine' }]), 'o/r', 1, 7, 'me', [7], 'fixed'), /not a Sous review/);
+  // Not recorded in state.
+  await assert.rejects(dismissOwn(fake({ user: { login: 'me' }, state: 'CHANGES_REQUESTED', body: '' }, sous), 'o/r', 1, 7, 'me', [], 'fixed'), /not a Sous review/);
+  // Someone else's account.
+  await assert.rejects(dismissOwn(fake({ user: { login: 'them' }, state: 'CHANGES_REQUESTED', body: '' }, sous), 'o/r', 1, 7, 'me', [7], 'fixed'), /not a Sous review/);
 });

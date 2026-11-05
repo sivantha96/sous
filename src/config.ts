@@ -9,6 +9,8 @@ export interface Config {
   paused: boolean | string[];
   /** Reviews posted per run, across all orgs, so a backlog never lands at once. */
   maxReviewsPerRun: number;
+  /** Italic line that ends every comment and the review body, saying whose AI reviewer wrote it. */
+  attribution: string;
 }
 
 export interface Profile {
@@ -30,7 +32,8 @@ export function loadConfig(): Config {
   const c = readJson<Partial<Config> | null>(configPath(), null);
   if (!c) throw new Error(`no ${configPath()}; run \`sous init\``);
   if (!Array.isArray(c.orgs)) throw new Error('config.json: "orgs" must be a list');
-  return { orgs: c.orgs, paused: c.paused ?? false, maxReviewsPerRun: c.maxReviewsPerRun ?? 3 };
+  if (c.attribution !== undefined && !/^\S.*\S$/.test(c.attribution)) throw new Error('config.json: "attribution" must be one line of text');
+  return { orgs: c.orgs, paused: c.paused ?? false, maxReviewsPerRun: c.maxReviewsPerRun ?? 3, attribution: c.attribution ?? 'From the AI reviewer' };
 }
 
 export function saveConfig(c: Config): void {

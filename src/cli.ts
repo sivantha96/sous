@@ -64,7 +64,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   async init() {
     mkdirSync(meDir(), { recursive: true });
     const path = join(sousHome(), 'config.json');
-    if (!existsSync(path)) saveConfig({ orgs: [], paused: false, maxReviewsPerRun: 3 });
+    if (!existsSync(path)) saveConfig({ orgs: [], paused: false, maxReviewsPerRun: 3, attribution: 'From the AI reviewer' });
     await gitInit(meDir());
     print({ home: sousHome() });
     return 0;
@@ -174,14 +174,15 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const config = loadConfig();
     const profile = loadProfile(draft.org);
     const pending = isPaused(config, draft.org) || profile.postingMode === 'draft';
+    const gh = await ghFor(profile.ghAccount);
+    const files = await getAll<{ filename: string; patch?: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/files?per_page=100`);
     let payload;
     try {
-      payload = buildReview(draft, { pending });
+      payload = buildReview(draft, { pending, attribution: config.attribution, files });
     } catch (e) {
       if (e instanceof LintError) logEvent(draft.org, 'lint-refused', { pr: prKey(draft.repo, draft.number), problems: e.problems });
       throw e;
     }
-    const gh = await ghFor(profile.ghAccount);
     const { reviewId, commentIds } = await postReview(gh, draft, payload);
     const state = loadState(draft.org);
     const key = prKey(draft.repo, draft.number);
