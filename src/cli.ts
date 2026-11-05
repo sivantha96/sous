@@ -1,14 +1,15 @@
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config } from './config.ts';
 import { findDue } from './due.ts';
 import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
-import { get, getAll, ghFor, whoami } from './gh.ts';
+import { get, getAll, ghFor, send, whoami } from './gh.ts';
 import { appendLine, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
 import { buildDenylist, findLeaks } from './leak.ts';
-import { buildReview, dismissOwn, hasMarker, LintError, postReview, signed, type Draft } from './post.ts';
+import { applyCorrections, isDuplicate, missingDecisions, verifyEvidence, type Correction } from './evidence.ts';
+import { buildReview, dismissOwn, hasMarker, LintError, marker, postReview, signed, type Draft } from './post.ts';
 import { commitAt, gateFails, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
 import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
@@ -181,50 +182,123 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     return 0;
   },
 
+  /**
+   * The only way a review leaves the machine. Adopts an earlier post on the same head, checks every
+   * finding's quotes against the real files, drops points Sous already made, allows one repair limited
+   * to line, side, path and quote, then posts and gives back a review request the post consumed.
+   */
   async post(args) {
-    const [file] = args;
-    if (!file) throw new Error('usage: sous post <draft.json>');
-    const draft = JSON.parse(readFileSync(file, 'utf8')) as Draft;
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { repair: { type: 'string' } } });
+    const [file] = positionals;
+    if (!file) throw new Error('usage: sous post <draft.json> [--repair <corrections.json>]');
+    const draft = JSON.parse(readFileSync(file, 'utf8')) as Draft & { repaired?: boolean };
     const config = loadConfig();
     const profile = loadProfile(draft.org);
     const pending = isPaused(config, draft.org) || profile.postingMode === 'draft';
     const gh = await ghFor(profile.ghAccount);
+    const me = await whoami(gh);
+    const key = prKey(draft.repo, draft.number);
+    const state = loadState(draft.org);
+    const prev = state.prs[key] ?? emptyPr(draft.head);
+
+    // A post whose response was lost already exists on this head: adopt it instead of posting twice.
+    for (const r of await getAll<{ id: number; user: { login: string } | null; commit_id: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/reviews?per_page=100`)) {
+      if (r.user?.login !== me || r.commit_id !== draft.head || prev.reviewIds.includes(r.id)) continue;
+      const comments = await get<{ id: number; body: string }[]>(gh, `repos/${draft.repo}/pulls/${draft.number}/reviews/${r.id}/comments?per_page=100`);
+      if (!comments.some((c) => c.body.includes(marker(draft.head)))) continue;
+      state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, r.id], commentIds: [...prev.commentIds, ...comments.map((c) => c.id)] };
+      saveState(draft.org, state);
+      logEvent(draft.org, 'adopted', { pr: key, head: draft.head, reviewId: r.id });
+      print({ pr: key, adopted: r.id });
+      return 0;
+    }
+
     const files = await getAll<{ filename: string; patch?: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/files?per_page=100`);
+    const pull = await get<{ base: { ref: string } }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
+    const clone = join(sousHome(), 'cache', draft.repo);
+    if (!existsSync(clone)) throw new Error(`no clone at ${clone}; run sous checkout first`);
+    const git = (...a: string[]): string | null => {
+      try {
+        return execFileSync('git', a, { cwd: clone, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch {
+        return null;
+      }
+    };
+    const base = git('merge-base', `origin/${pull.base.ref}`, draft.head)?.trim();
+    const tree = (git('ls-tree', '-r', '--name-only', draft.head) ?? '').split('\n').filter(Boolean);
+    const read = (side: 'RIGHT' | 'LEFT', path: string): string[] | null => {
+      const sha = side === 'LEFT' ? base : draft.head;
+      const text = sha ? git('show', `${sha}:${path}`) : null;
+      return text === null ? null : text.split('\n');
+    };
+
+    let findings = draft.findings;
+    const repairing = values.repair !== undefined;
+    if (repairing) {
+      if (draft.repaired) throw new Error('this draft was repaired once already; Sous allows one repair');
+      findings = applyCorrections(findings, JSON.parse(readFileSync(values.repair!, 'utf8')) as Correction[]);
+      writeJson(file, { ...draft, findings, repaired: true });
+    }
+    const checked = verifyEvidence(findings, { files, tree, read });
+    const failing = new Set(checked.problems.map((p) => p.index));
+    if (failing.size && !repairing) {
+      const problems = checked.problems.map((p) => `#${p.index} ${p.problem}`);
+      logEvent(draft.org, 'lint-refused', { pr: key, problems });
+      throw new LintError([...problems, 'fix with one `sous post <draft> --repair <corrections.json>`: [{index, target: anchor|evidence|counterEvidence, item?, field: line|side|path|quote, value}]']);
+    }
+    // Points Sous already made on this PR are not made again.
+    const existing = (await getAll<{ path: string; line: number | null; body: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/comments?per_page=100`)).filter((c) => hasMarker(c.body));
+    const keep = checked.findings.filter((f, i) => !failing.has(i) && !existing.some((e) => isDuplicate(f, e)));
+    const dropped = checked.findings.length - keep.length;
+    if (dropped) logEvent(draft.org, 'dropped', { pr: key, failing: [...failing], duplicates: dropped - failing.size });
+    if (keep.length === 0) throw new Error('nothing left to post after checks; record the head with sous mark --verified');
+
     let payload;
     try {
-      payload = buildReview(draft, { pending, attribution: config.attribution, files });
+      payload = buildReview({ ...draft, findings: keep }, { pending, attribution: config.attribution, files });
     } catch (e) {
-      if (e instanceof LintError) logEvent(draft.org, 'lint-refused', { pr: prKey(draft.repo, draft.number), problems: e.problems });
+      if (e instanceof LintError) logEvent(draft.org, 'lint-refused', { pr: key, problems: e.problems });
       throw e;
     }
-    const { reviewId, commentIds } = await postReview(gh, draft, payload);
-    const state = loadState(draft.org);
-    const key = prKey(draft.repo, draft.number);
-    const prev = state.prs[key] ?? emptyPr(draft.head);
-    state.prs[key] = {
-      ...prev,
-      head: draft.head,
-      reviewedAt: new Date().toISOString(),
-      reviewIds: [...prev.reviewIds, reviewId],
-      commentIds: [...prev.commentIds, ...commentIds],
-    };
+    const requested = async () => (await get<{ users: { login: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`)).users.map((u) => u.login);
+    const wasRequested = (await requested()).includes(me);
+    const { reviewId, commentIds } = await postReview(gh, { ...draft, findings: keep }, payload);
+    // Submitting a review removes the request from your queue; give it back so the PR still waits on you.
+    if (wasRequested && !(await requested()).includes(me)) {
+      await send(gh, 'POST', `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`, { reviewers: [me] }).catch((e: Error) => logEvent(draft.org, 'request-not-restored', { pr: key, error: e.message.slice(0, 200) }));
+    }
+    state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, reviewId], commentIds: [...prev.commentIds, ...commentIds] };
     saveState(draft.org, state);
-    logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: draft.findings.map((f) => ({ severity: f.severity, path: f.path, line: f.line })) });
-    print({ pr: key, reviewId, event: payload.event ?? 'PENDING', comments: commentIds.length });
+    logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: keep.map((f) => ({ severity: f.severity, path: f.path, line: f.line, id: f.id })) });
+    print({ pr: key, reviewId, event: payload.event ?? 'PENDING', comments: commentIds.length, dropped });
     return 0;
   },
 
-  /** Records a head as reviewed when nothing survived verification, so it is not reviewed again. */
+  /** Records a head as reviewed with nothing to post. Requires the verifier's result, so a crash is never a clean review. */
   async mark(args) {
-    const [org, repo, n, head] = args;
-    if (!org || !repo || !n || !head || !/^[0-9a-f]{40}$/.test(head)) throw new Error('usage: sous mark <org> <owner/repo> <number> <40-char head>');
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { verified: { type: 'string' } } });
+    const [org, repo, n, head] = positionals;
+    if (!org || !repo || !n || !head || !/^[0-9a-f]{40}$/.test(head) || !values.verified) throw new Error('usage: sous mark <org> <owner/repo> <number> <40-char head> --verified <verifier.json>');
+    const v = JSON.parse(readFileSync(values.verified, 'utf8')) as { kept?: { ownerDecision?: boolean }[]; dropped?: unknown[] };
+    if (!Array.isArray(v.kept) || !Array.isArray(v.dropped)) throw new Error('the verifier output has no kept and dropped lists; not marking the head as reviewed');
+    if (v.kept.some((k) => !k.ownerDecision)) throw new Error('the verifier kept findings; post them instead of marking');
     const state = loadState(org);
     const key = prKey(repo, Number(n));
     state.prs[key] = { ...(state.prs[key] ?? emptyPr(head)), head, reviewedAt: new Date().toISOString() };
     saveState(org, state);
-    logEvent(org, 'reviewed', { pr: key, head, event: 'NONE', findings: [] });
+    logEvent(org, 'reviewed', { pr: key, head, event: 'NONE', findings: [], droppedByVerifier: v.dropped.length });
     print({ pr: key, head, event: 'NONE' });
     return 0;
+  },
+
+  /** Fails unless every lens candidate id has exactly one verifier decision. */
+  async decisions(args) {
+    const [verifiedFile, ...lensFiles] = args;
+    if (!verifiedFile || lensFiles.length === 0) throw new Error('usage: sous decisions <verified.json> <lens.json...>');
+    const ids = lensFiles.flatMap((f) => (JSON.parse(readFileSync(f, 'utf8')) as { candidates?: { id?: string }[] }).candidates ?? []).map((c, i) => c.id ?? `missing-id-${i}`);
+    const missing = missingDecisions(ids, JSON.parse(readFileSync(verifiedFile, 'utf8')));
+    print({ candidates: ids.length, missing });
+    return missing.length ? 1 : 0;
   },
 
   /** Replies in a thread Sous started. Never in a thread you or anyone else started. */

@@ -25,8 +25,8 @@ export const roleOf = (agentType: string | undefined): Role => (agentType ? (ROL
 
 /** `sous` subcommands each role may run. Everything else in sous writes to GitHub or memory. */
 const SOUS: Record<Role, string[]> = {
-  reader: ['status', 'noise', 'checkout', 'gate', 'memory', 'facts'],
-  writer: ['status', 'noise', 'post', 'mark', 'memory'],
+  reader: ['status', 'noise', 'checkout', 'gate', 'memory', 'facts', 'decisions'],
+  writer: ['status', 'noise', 'post', 'mark', 'memory', 'decisions'],
   'reply-judge': ['status', 'checkout', 'reply', 'resolve', 'seen', 'memory', 'facts'],
   reflector: ['status', 'leak-check', 'score', 'facts', 'memory', 'stats'],
   main: [],

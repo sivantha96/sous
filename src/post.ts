@@ -1,3 +1,4 @@
+import { diffLines } from './evidence.ts';
 import { cleanForPublishing } from './published.ts';
 import { get, send, type Gh } from './gh.ts';
 import { lintFinding, lintText, type Finding } from './voice-lint.ts';
@@ -19,7 +20,7 @@ export interface ReviewPayload {
   body: string;
   /** Omitted for a pending review that only you can see. */
   event?: ReviewEvent;
-  comments: { path: string; line: number; side: 'RIGHT'; body: string }[];
+  comments: { path: string; line: number; side: 'RIGHT' | 'LEFT'; body: string }[];
 }
 
 /** Hidden in every Sous comment, so Sous can tell its own comments from yours. */
@@ -32,20 +33,7 @@ export const signed = (text: string, attribution: string, head: string): string 
 const render = (f: Finding): string => (f.fix?.trim() ? `${f.body}\n\nFix: ${f.fix}` : f.body);
 
 /** RIGHT-side line numbers a review comment may anchor to: lines a hunk adds or keeps. */
-export function rightLines(patch: string | undefined): Set<number> {
-  const lines = new Set<number>();
-  let line = 0;
-  for (const row of (patch ?? '').split('\n')) {
-    const hunk = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
-    if (hunk) {
-      line = Number(hunk[1]);
-      continue;
-    }
-    if (line === 0 || row.startsWith('-') || row.startsWith('\\')) continue;
-    lines.add(line++);
-  }
-  return lines;
-}
+export const rightLines = (patch: string | undefined): Set<number> => diffLines(patch).RIGHT;
 
 export class LintError extends Error {
   readonly problems: string[];
@@ -63,9 +51,9 @@ export function buildReview(
   for (const f of d.findings.filter((f) => f.owner)) problems.push(`${f.path}:${f.line}: owner decision; it goes to questions.md, never the PR`);
   if (d.findings.length === 0) problems.push('no findings; record the head with `sous mark` instead');
   if (!/^[0-9a-f]{40}$/.test(d.head)) problems.push('head is not a full commit sha');
-  const anchors = new Map(opts.files.map((f) => [f.filename, rightLines(f.patch)]));
+  const anchors = new Map(opts.files.map((f) => [f.filename, diffLines(f.patch)]));
   for (const f of d.findings) {
-    if (!anchors.get(f.path)?.has(f.line)) problems.push(`${f.path}:${f.line}: not a line in the diff; GitHub would reject the whole review`);
+    if (!anchors.get(f.path)?.[f.side ?? 'RIGHT'].has(f.line)) problems.push(`${f.path}:${f.line}: not a line in the diff; GitHub would reject the whole review`);
   }
   if (problems.length) throw new LintError(problems);
 
@@ -73,7 +61,7 @@ export function buildReview(
   const payload: ReviewPayload = {
     commit_id: d.head,
     body: '',
-    comments: d.findings.map((f) => ({ path: f.path, line: f.line, side: 'RIGHT', body: signed(render(f), opts.attribution, d.head) })),
+    comments: d.findings.map((f) => ({ path: f.path, line: f.line, side: f.side ?? 'RIGHT', body: signed(render(f), opts.attribution, d.head) })),
   };
   if (!opts.pending) payload.event = d.findings.some((f) => f.severity === 'major') ? 'REQUEST_CHANGES' : 'COMMENT';
   return payload;

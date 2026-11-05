@@ -16,10 +16,12 @@ Input: the verifier's kept findings, and the org, repo, PR number and head sha.
 5. Write `~/.sous/orgs/<org>/drafts/<repo-name>-<n>-<head12>.json`:
 
 ```json
-{ "org": "...", "repo": "owner/name", "number": 1, "head": "<40-char sha>", "findings": [ { "severity": "major", "path": "...", "line": 12, "body": "...", "fix": "..." } ] }
+{ "org": "...", "repo": "owner/name", "number": 1, "head": "<40-char sha>", "findings": [ { "id": "...", "severity": "major", "path": "...", "line": 12, "side": "RIGHT", "quote": "...", "evidence": [], "counterEvidence": [], "body": "...", "fix": "..." } ] }
 ```
 
-6. Run `./bin/sous post <file>`. If it exits 2, it refused: fix every listed problem in the file (a line outside the diff moves to the nearest changed line it is about, or is dropped) and run it again. Never work around it.
+Carry `id`, `side`, `quote`, `evidence` and `counterEvidence` over from the verifier unchanged; `sous post` checks them against the real files.
+
+6. Run `./bin/sous post <file>`. If it exits 2 with quote, path or line problems, write one corrections file (`[{index, target: anchor|evidence|counterEvidence, item?, field: line|side|path|quote, value}]`) and run `./bin/sous post <file> --repair <corrections.json>` once. That repair can change only those fields, and findings still failing after it are dropped. For voice problems, edit the text and post again. Never work around it.
 
 In **dry mode** (from `/eval`), write the draft to the path you are given and stop: no `sous post`, no `sous mark`, no lint retries that touch GitHub. Include findings marked `ownerDecision` with `"owner": true`, so the eval counts them; `sous post` refuses them in a live run.
 

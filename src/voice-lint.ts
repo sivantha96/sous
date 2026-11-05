@@ -1,6 +1,15 @@
 import { findSecrets } from './published.ts';
 
 export type Severity = 'major' | 'minor' | 'nit';
+export type Side = 'RIGHT' | 'LEFT';
+
+/** Exact text at a cited line: checked against the head (RIGHT) or the base (LEFT) before posting. */
+export interface Quote {
+  path: string;
+  line: number;
+  quote: string;
+  side?: Side;
+}
 
 export interface Finding {
   severity: Severity;
@@ -11,6 +20,16 @@ export interface Finding {
   fix?: string;
   /** A choice only the reviewer can make. Kept in eval drafts so it counts; never posted. */
   owner?: boolean;
+  /** LEFT anchors on a removed line (a deleted guard); RIGHT, the default, on an added or kept one. */
+  side?: Side;
+  /** Exact text of the anchor line, so a miscounted line can be moved. */
+  quote?: string;
+  /** The code that shows the problem. */
+  evidence?: Quote[];
+  /** The guard, caller or test checked while trying to refute the finding. Required. */
+  counterEvidence?: Quote[];
+  /** The lens candidate id(s) this finding came from, for the verifier's one-decision-per-id check. */
+  id?: string;
 }
 
 // Words Sivantha never uses, and phrases that read like a bot.
