@@ -18,7 +18,7 @@ import { commitAt, gateFails, lensRecall, meanTotals, parseAiReview, scoreCase, 
 import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
 import { codeLinks, plan } from './plan.ts';
-import { mergeUsage, spanSeconds, usageByModel, type Usage } from './usage.ts';
+import { mergeUsage, spanSeconds, subagentLogs, usageByModel, type Usage } from './usage.ts';
 import { retro } from './retro.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
@@ -839,10 +839,10 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     // Wall time: the main session's span is the run's; a type's is the sum of its subagents' spans.
     const seconds: Record<string, number> = { main: spanSeconds(mainLog) };
     const subDir = join(projects, session, 'subagents');
-    for (const f of existsSync(subDir) ? readdirSync(subDir).filter((x) => x.endsWith('.jsonl')) : []) {
-      const meta = readJson<{ agentType?: string }>(join(subDir, f.replace(/\.jsonl$/, '.meta.json')), {});
+    for (const f of subagentLogs(subDir)) {
+      const meta = readJson<{ agentType?: string }>(f.replace(/\.jsonl$/, '.meta.json'), {});
       const type = meta.agentType ?? 'unknown';
-      const log = readFileSync(join(subDir, f), 'utf8');
+      const log = readFileSync(f, 'utf8');
       byAgent[type] = mergeUsage(byAgent[type] ?? {}, usageByModel(log));
       seconds[type] = (seconds[type] ?? 0) + spanSeconds(log);
     }
