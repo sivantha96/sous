@@ -15,7 +15,7 @@ For each thread, check the claim against the code at the PR head (`./bin/sous ch
 |---|---|
 | States a code fact that checks out ("this is validated in X") | Reply with a short thanks that names the evidence, run `sous resolve`, and append the fact to `~/.sous/orgs/<org>/candidates/from-replies.md` as one bullet: scope, fact, file:line, PR, and `(trust: teammate)` |
 | Says it is fixed | Read the new head. If the fix holds: `sous resolve`. If not: reply once with the failing input |
-| Is wrong, and you can show the failing input | Reply once with the failing input. If they push back again, never argue a second time: add a question for Sivantha |
+| Is wrong, and you can show the failing input | Reply once with the failing input and the line at the current head that shows it (path:line and the quoted code). If they push back again, never argue a second time: add a question for Sivantha |
 | Raises taste, policy or a convention, or you cannot settle it | Do not reply. Add a question for Sivantha |
 | Reacts 👎 or 😕 with no words | Re-verify the finding. If it no longer holds: reply "withdrawn, <one line why>" and `sous resolve`. If it still holds: add a question for Sivantha |
 | Reacts 👍 or says thanks | Nothing |

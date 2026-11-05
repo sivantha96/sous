@@ -5,8 +5,8 @@ import { hasMarker } from './post.ts';
 import { prKey, type OrgState } from './state.ts';
 import { threadSignals, type PrComment, type ThreadSignal } from './threads.ts';
 
-/** REPLY: teammates replied or reacted on Sous's comments, with no new push to review. */
-export type Reason = 'NEW' | 'PUSHED' | 'REPLY';
+/** REPLY: teammates replied or reacted on Sous's comments, with no new push to review. REREQUESTED: the author asked for your review again after Sous's last review, with no new push. */
+export type Reason = 'NEW' | 'PUSHED' | 'REPLY' | 'REREQUESTED';
 
 export interface DueItem {
   org: string;
@@ -60,6 +60,21 @@ export function yourLatestHead(reviews: { user: { login: string } | null; commit
   return yours.sort((a, b) => b.submitted_at!.localeCompare(a.submitted_at!))[0]?.commit_id ?? null;
 }
 
+interface TimelineEvent {
+  event: string;
+  created_at?: string;
+  actor?: { login: string } | null;
+  requested_reviewer?: { login: string } | null;
+}
+
+/**
+ * Whether someone other than you asked for your review after `since`. Sous gives back your review
+ * request itself after posting (as you), so only a request by someone else counts.
+ */
+export function rerequestedAfter(events: TimelineEvent[], me: string, since: string): boolean {
+  return events.some((e) => e.event === 'review_requested' && e.requested_reviewer?.login === me && e.actor?.login !== me && (e.created_at ?? '') > since);
+}
+
 /** Runs fn over items, at most `limit` at a time, keeping order. */
 export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
@@ -74,7 +89,7 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
   return out;
 }
 
-const RANK: Record<Reason, number> = { REPLY: 0, PUSHED: 1, NEW: 2 };
+const RANK: Record<Reason, number> = { REPLY: 0, REREQUESTED: 1, PUSHED: 1, NEW: 2 };
 /** Replies first, then pushes, then new PRs: a waiting author is blocked on you. */
 export const byPriority = (a: DueItem, b: DueItem): number => RANK[a.reason] - RANK[b.reason];
 
@@ -94,17 +109,29 @@ interface Pull {
 export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: string, runStartedAt: Date): Promise<{ due: DueItem[]; skipped: { pr: string; why: string }[]; rebased: { pr: string; head: string }[] }> {
   const queries = [`review-requested:${me}`, `reviewed-by:${me}`].map((q) => `is:pr is:open draft:false org:${profile.org} -author:${me} ${q}`);
   const found = new Map<string, SearchItem>();
-  for (const q of queries) {
+  const requested = new Set<string>();
+  for (const [i, q] of queries.entries()) {
     for (const item of await getAll<SearchItem>(gh, `search/issues?per_page=100&q=${encodeURIComponent(q)}`)) {
       found.set(`${item.repository_url}#${item.number}`, item);
+      if (i === 0) requested.add(`${item.repository_url}#${item.number}`);
     }
   }
 
   const due: DueItem[] = [];
   const skipped: { pr: string; why: string }[] = [];
   const rebased: { pr: string; head: string }[] = [];
+  // One PR's failure is logged as skipped; it never stops the other PRs or the org.
   await mapLimit([...found.values()], 6, async (item) => {
     const repo = item.repository_url.split('/repos/')[1]!;
+    try {
+      await one(item, repo);
+    } catch (e) {
+      skipped.push({ pr: prKey(repo, item.number), why: `error: ${(e as Error).message.slice(0, 200)}` });
+    }
+  });
+  return { due: due.sort(byPriority), skipped, rebased };
+
+  async function one(item: SearchItem, repo: string): Promise<void> {
     const pull = await get<Pull>(gh, `repos/${repo}/pulls/${item.number}`);
     const key = prKey(repo, item.number);
     if (pull.draft) return;
@@ -112,6 +139,13 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
     const seen = state.prs[key];
     const threads = seen?.commentIds.length ? threadSignals(await getAll<PrComment>(gh, `repos/${repo}/pulls/${item.number}/comments?per_page=100`), seen, me) : [];
     const pushed = classify(state, repo, item.number, pull.head.sha);
+    if (!pushed && seen?.reviewedAt && requested.has(`${item.repository_url}#${item.number}`)) {
+      const events = await getAll<TimelineEvent>(gh, `repos/${repo}/issues/${item.number}/timeline?per_page=100`);
+      if (rerequestedAfter(events, me, seen.reviewedAt)) {
+        due.push({ org: profile.org, repo, number: item.number, title: pull.title, head: pull.head.sha, base: pull.base.ref, reason: 'REREQUESTED', gate: { action: 'review' }, threads, scope: 'full' });
+        return;
+      }
+    }
     if (!pushed && threads.length === 0) return;
     if (!pushed) {
       due.push({ org: profile.org, repo, number: item.number, title: pull.title, head: pull.head.sha, base: pull.base.ref, reason: 'REPLY', gate: { action: 'review' }, threads, scope: 'full' });
@@ -149,6 +183,5 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
       scope,
       ...(scope === 'incremental' && seen ? { since: seen.head } : {}),
     });
-  });
-  return { due: due.sort(byPriority), skipped, rebased };
+  }
 }

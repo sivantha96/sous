@@ -5,6 +5,8 @@ import { parseArgs, promisify } from 'node:util';
 import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config, type Profile } from './config.ts';
 import { checkOutbound, ensureCanaries, otherOrgTerms } from './outbound.ts';
 import { hiddenInDiff, stripHidden } from './hidden.ts';
+import { CODEOWNERS_PATHS, parseCodeowners, unownedChanges } from './owners.ts';
+import { findSkill } from './skills.ts';
 import { findDue, patchId } from './due.ts';
 import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
 import { get, getAll, ghFor, send, whoami } from './gh.ts';
@@ -20,7 +22,7 @@ import { mergeUsage, usageByModel, type Usage } from './usage.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { diffTerms, factState, parseBullets, pinBullet, searchMemory, type Bullet, type Cite } from './memory.ts';
+import { diffTerms, factState, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
 import { emptyPr, loadState, logEvent, prKey, saveState } from './state.ts';
 
@@ -133,6 +135,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       ruleSources: existing?.ruleSources ?? [],
       postSuggestions: existing?.postSuggestions ?? false,
       linkHosts: existing?.linkHosts ?? [],
+      skills: existing?.skills ?? [],
     });
     ensureCanaries();
     await refreshDenylist(org, account);
@@ -152,8 +155,18 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const out = [];
     for (const org of values.org ? [values.org] : config.orgs) {
       const profile = loadProfile(org);
-      const gh = await ghFor(profile.ghAccount);
-      const me = await whoami(gh);
+      // Preflight: an org whose gh account can't sign in is blocked for this run, never guessed at.
+      let gh: Awaited<ReturnType<typeof ghFor>>;
+      let me: string;
+      try {
+        gh = await ghFor(profile.ghAccount);
+        me = await whoami(gh);
+      } catch (e) {
+        const why = `gh account ${profile.ghAccount} is not signed in: ${(e as Error).message.slice(0, 200)}`;
+        logEvent(org, 'blocked', { why });
+        out.push({ org, blocked: why, paused: isPaused(config, org), postingMode: profile.postingMode, due: [], skipped: [] });
+        continue;
+      }
       const { due, skipped, rebased } = await findDue(gh, profile, loadState(org), me, started);
       for (const s of skipped) logEvent(org, 'skipped', s);
       // A rebase that changes nothing: record the new head, no review needed.
@@ -224,6 +237,45 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const conventions = CONVENTION_FILES.filter((f) => baseFiles.split('\n').includes(f));
     const { stdout: diff } = await run('git', ['diff', '-U0', '--no-ext-diff', `origin/${base}...${head}`], { cwd: clone, maxBuffer: 256 * 1024 * 1024 });
     print({ tree, baseRef: `origin/${base}`, readInstructionsWith: `git -C ${clone} show origin/${base}:<path>`, baseConventions: conventions, excludedFromCheckout: AI_CONFIG, hiddenCharacters: hiddenInDiff(diff) });
+    return 0;
+  },
+
+  /** Changed paths whose CODEOWNERS owners nobody asked to review, read from the base branch. */
+  async owners(args) {
+    const [org, repo, n, base] = args;
+    if (!org || !repo || !n || !base) throw new Error('usage: sous owners <org> <owner/repo> <number> <base>');
+    const gh = await ghFor(loadProfile(org).ghAccount);
+    const clone = join(sousHome(), 'cache', repo);
+    let text = '';
+    let source = '';
+    for (const p of CODEOWNERS_PATHS) {
+      try {
+        text = execFileSync('git', ['show', `origin/${base}:${p}`], { cwd: clone, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+        source = p;
+        break;
+      } catch {
+        // Not at this path; GitHub reads the next one.
+      }
+    }
+    if (!source) {
+      print({ codeowners: null, unowned: [] });
+      return 0;
+    }
+    const files = (await getAll<{ filename: string }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).map((f) => f.filename);
+    const req = await get<{ users: { login: string }[]; teams: { slug: string }[] }>(gh, `repos/${repo}/pulls/${n}/requested_reviewers`);
+    const reviewers = (await getAll<{ user: { login: string } | null }>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`)).flatMap((r) => (r.user ? [r.user.login] : []));
+    print({ codeowners: source, unowned: unownedChanges(parseCodeowners(text), files, { users: [...req.users.map((u) => u.login), ...reviewers], teams: req.teams.map((t) => t.slug) }) });
+    return 0;
+  },
+
+  /** The installed convention skills (org profile `skills`) whose paths the PR touches, with their files. */
+  async skills(args) {
+    const [org, repo, n] = args;
+    if (!org || !repo || !n) throw new Error('usage: sous skills <org> <owner/repo> <number>');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const files = (await getAll<{ filename: string }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).map((f) => f.filename);
+    print(profile.skills.filter((s) => scopeMatches(s.paths, files)).map((s) => ({ name: s.name, file: findSkill(s.name) })));
     return 0;
   },
 
@@ -333,6 +385,14 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const keep = checked.findings.filter((f, i) => !failing.has(i) && !existing.some((e) => isDuplicate(f, e)));
     const dropped = checked.findings.length - keep.length;
     if (dropped) logEvent(draft.org, 'dropped', { pr: key, failing: [...failing], duplicates: dropped - failing.size });
+    if (keep.length === 0 && failing.size === 0) {
+      // Every point is one Sous already made on this PR: the head is reviewed, nothing new to say.
+      state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString() };
+      saveState(draft.org, state);
+      logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: 'NONE', findings: [], allDuplicates: dropped });
+      print({ pr: key, event: 'NONE', dropped });
+      return 0;
+    }
     if (keep.length === 0) throw new Error('nothing left to post after checks; record the head with sous mark --verified');
     if (keep.length > config.maxCommentsPerReview) throw new LintError([`${keep.length} comments; at most ${config.maxCommentsPerReview} per review. Keep the most severe and drop the rest`]);
 

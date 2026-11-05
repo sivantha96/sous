@@ -69,3 +69,10 @@ test('replies are signed the same way as review comments', () => {
 test('an owner decision is never posted', () => {
   assert.throws(() => buildReview(draft([{ ...major, owner: true }]), { pending: false }), /owner decision/);
 });
+
+test('a range posts with start_line inside one hunk, and a broken range is refused', () => {
+  const p = buildReview(draft([{ ...major, startLine: 2, line: 4 }]), { pending: false });
+  assert.deepEqual([p.comments[0]!.start_line, p.comments[0]!.start_side, p.comments[0]!.line], [2, 'RIGHT', 4]);
+  assert.throws(() => buildReview(draft([{ ...major, startLine: 4, line: 2 }]), { pending: false }), LintError);
+  assert.throws(() => buildReview(draft([{ ...major, startLine: 1, line: 12 }]), { pending: false }), LintError);
+});

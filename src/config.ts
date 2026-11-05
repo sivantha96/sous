@@ -31,6 +31,8 @@ export interface Profile {
   postSuggestions: boolean;
   /** Hosts besides github.com/<org>/ that posted links may point to (outbound.ts). */
   linkHosts: string[];
+  /** Installed Claude Code skills that hold this org's conventions, each for the paths it covers (`plugin:skill` or `skill`). */
+  skills: { name: string; paths: string[] }[];
 }
 
 const configPath = (): string => join(sousHome(), 'config.json');
@@ -65,6 +67,7 @@ export function loadProfile(org: string): Profile {
     ruleSources: p.ruleSources ?? [],
     postSuggestions: p.postSuggestions ?? false,
     linkHosts: p.linkHosts ?? [],
+    skills: p.skills ?? [],
   };
 }
 

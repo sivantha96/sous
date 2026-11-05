@@ -16,6 +16,8 @@ export interface Finding {
   severity: Severity;
   path: string;
   line: number;
+  /** First line when the issue spans a block ending at `line`, on the same side and in the same hunk. */
+  startLine?: number;
   body: string;
   /** Only when the author needs a specific fix, or there is one solid solution. Otherwise name the issue and let them solve it. */
   fix?: string;

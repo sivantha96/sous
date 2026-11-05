@@ -24,10 +24,12 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 
 | Command | Does |
 |---|---|
-| `sous due` | Finds PRs due in every org, reads CodeRabbit's state, picks this run's PRs (capped by `maxReviewsPerRun`). No model tokens |
+| `sous due` | Finds PRs due in every org, reads CodeRabbit's state, picks this run's PRs (capped by `maxReviewsPerRun`). No model tokens. A PR is due when it is new, was pushed, has replies on Sous's threads, or was re-requested by someone else after Sous's last review with no push (`REREQUESTED`). An org whose gh account can't sign in is listed as `blocked`; a PR that errors is listed as skipped, and the rest still run |
 | `sous gate` | Waits for CodeRabbit on one PR, polling every 3 minutes |
 | `sous checkout` | Read-only worktree of a PR head, without `.claude/`, `.mcp.json` and other AI-config paths (their changes are reviewed from the diff, their base copies read with `git show`). Also lists added lines that carry invisible or bidi characters (`hiddenCharacters`) |
 | `sous prtext` | The PR's title, body, reviews and comments with HTML comments and invisible characters removed, for the gatherer's `.pr-text.md`. The guard keeps the verifier and writer from reading that file |
+| `sous owners` | Changed paths whose CODEOWNERS owners (from the base branch, last match wins) nobody asked to review |
+| `sous skills` | The installed Claude Code skills the org profile lists (`skills`: name and paths) that match the PR's paths, with each SKILL.md |
 | `sous noise` | Prints which paths are lockfiles or generated output |
 | `sous plan` | Risk score, drivers, lenses, the missed pass and file order, from the changed paths alone (no model call) |
 | `sous memory` | Memory bullets for a PR, by scope and by the names the diff touches, ranked; `sous memory hits <org>` shows when each bullet last drove a posted finding |
