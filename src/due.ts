@@ -19,8 +19,32 @@ export interface DueItem {
   gate: GateResult;
   /** Replies and reactions on Sous's threads, for the reply judge. Empty when there are none. */
   threads: ThreadSignal[];
+  /** `incremental`: the previous head is an ancestor and the merge base is unchanged, so only commits after `since` are new. */
+  scope: 'full' | 'incremental';
+  since?: string;
 }
 
+/**
+ * A content id for a PR's change, independent of commits and line numbers: the same patch rebased
+ * onto a new base gets the same id. Lines that only moved keep the id too.
+ */
+export function patchId(files: { filename: string; patch?: string }[]): string {
+  const h = createHash('sha256');
+  for (const f of [...files].sort((a, b) => a.filename.localeCompare(b.filename))) {
+    h.update(`${f.filename}\n`);
+    for (const row of (f.patch ?? '').split('\n')) if (/^[+-]/.test(row) && !/^(\+\+\+|---)/.test(row)) h.update(`${row.trimEnd()}\n`);
+  }
+  return h.digest('hex').slice(0, 16);
+}
+
+/** How a push relates to what Sous reviewed: review only the delta, skip it, or review in full. */
+export function pushScope(seen: { head: string; mergeBase?: string; patchId?: string }, now: { compareStatus: string; mergeBase: string; patchId: string }): 'incremental' | 'skip' | 'full' {
+  if (seen.patchId && seen.patchId === now.patchId) return 'skip';
+  if (now.compareStatus === 'ahead' && seen.mergeBase && seen.mergeBase === now.mergeBase) return 'incremental';
+  return 'full';
+}
+
+import { createHash } from 'node:crypto';
 import { isNoiseOnly } from './noise.ts';
 export { isNoiseOnly };
 
@@ -67,7 +91,7 @@ interface Pull {
   base: { ref: string };
 }
 
-export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: string, runStartedAt: Date): Promise<{ due: DueItem[]; skipped: { pr: string; why: string }[] }> {
+export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: string, runStartedAt: Date): Promise<{ due: DueItem[]; skipped: { pr: string; why: string }[]; rebased: { pr: string; head: string }[] }> {
   const queries = [`review-requested:${me}`, `reviewed-by:${me}`].map((q) => `is:pr is:open draft:false org:${profile.org} -author:${me} ${q}`);
   const found = new Map<string, SearchItem>();
   for (const q of queries) {
@@ -78,6 +102,7 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
 
   const due: DueItem[] = [];
   const skipped: { pr: string; why: string }[] = [];
+  const rebased: { pr: string; head: string }[] = [];
   await mapLimit([...found.values()], 6, async (item) => {
     const repo = item.repository_url.split('/repos/')[1]!;
     const pull = await get<Pull>(gh, `repos/${repo}/pulls/${item.number}`);
@@ -89,14 +114,25 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
     const pushed = classify(state, repo, item.number, pull.head.sha);
     if (!pushed && threads.length === 0) return;
     if (!pushed) {
-      due.push({ org: profile.org, repo, number: item.number, title: pull.title, head: pull.head.sha, base: pull.base.ref, reason: 'REPLY', gate: { action: 'review' }, threads });
+      due.push({ org: profile.org, repo, number: item.number, title: pull.title, head: pull.head.sha, base: pull.base.ref, reason: 'REPLY', gate: { action: 'review' }, threads, scope: 'full' });
       return;
     }
     const reason = pushed;
     const reviews = await getAll<Parameters<typeof yourLatestHead>[0][number]>(gh, `repos/${repo}/pulls/${item.number}/reviews?per_page=100`);
     if (yourLatestHead(reviews, me) === pull.head.sha) return;
-    const files = (await getAll<{ filename: string }>(gh, `repos/${repo}/pulls/${item.number}/files?per_page=100`)).map((f) => f.filename);
+    const fileList = await getAll<{ filename: string; patch?: string }>(gh, `repos/${repo}/pulls/${item.number}/files?per_page=100`);
+    const files = fileList.map((f) => f.filename);
     if (isNoiseOnly(files)) return void skipped.push({ pr: key, why: 'only lockfiles or generated files' });
+    let scope: DueItem['scope'] = 'full';
+    if (reason === 'PUSHED' && seen) {
+      const [delta, base] = await Promise.all([
+        get<{ status: string }>(gh, `repos/${repo}/compare/${seen.head}...${pull.head.sha}`).catch(() => ({ status: 'unknown' })),
+        get<{ merge_base_commit: { sha: string } }>(gh, `repos/${repo}/compare/${encodeURIComponent(pull.base.ref)}...${pull.head.sha}`).catch(() => null),
+      ]);
+      const s = pushScope(seen, { compareStatus: delta.status, mergeBase: base?.merge_base_commit.sha ?? '', patchId: patchId(fileList) });
+      if (s === 'skip') return void rebased.push({ pr: key, head: pull.head.sha });
+      scope = s;
+    }
     const commit = await get<{ commit: { committer: { date: string } } }>(gh, `repos/${repo}/commits/${pull.head.sha}`);
     const pushedAt = new Date(commit.commit.committer.date);
     const signal = await readCodeRabbit(gh, profile, repo, item.number, pull.head.sha, pushedAt);
@@ -110,7 +146,9 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
       reason,
       gate: gate({ enabled: profile.coderabbit !== null, signal, pushedAt, runStartedAt, now: new Date() }),
       threads,
+      scope,
+      ...(scope === 'incremental' && seen ? { since: seen.head } : {}),
     });
   });
-  return { due: due.sort(byPriority), skipped };
+  return { due: due.sort(byPriority), skipped, rebased };
 }

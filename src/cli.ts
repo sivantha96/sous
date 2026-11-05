@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config } from './config.ts';
-import { findDue } from './due.ts';
+import { findDue, patchId } from './due.ts';
 import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
 import { get, getAll, ghFor, send, whoami } from './gh.ts';
 import { appendLine, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
@@ -14,6 +14,10 @@ import { commitAt, gateFails, parseAiReview, scoreCase, totals, type Case, type 
 import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
 import { codeLinks, plan } from './plan.ts';
+import { mergeUsage, usageByModel, type Usage } from './usage.ts';
+import { createHash } from 'node:crypto';
+import { statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { diffTerms, factState, parseBullets, pinBullet, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
 import { emptyPr, loadState, logEvent, prKey, saveState } from './state.ts';
@@ -136,8 +140,18 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       const profile = loadProfile(org);
       const gh = await ghFor(profile.ghAccount);
       const me = await whoami(gh);
-      const { due, skipped } = await findDue(gh, profile, loadState(org), me, started);
+      const { due, skipped, rebased } = await findDue(gh, profile, loadState(org), me, started);
       for (const s of skipped) logEvent(org, 'skipped', s);
+      // A rebase that changes nothing: record the new head, no review needed.
+      if (rebased.length) {
+        const state = loadState(org);
+        for (const r of rebased) {
+          const pr = state.prs[r.pr];
+          if (pr) state.prs[r.pr] = { ...pr, head: r.head };
+          logEvent(org, 'rebase-skip', r);
+        }
+        saveState(org, state);
+      }
       for (const d of due.filter((d) => d.gate.action === 'defer')) logEvent(org, 'deferred', { pr: prKey(d.repo, d.number), head: d.head });
       out.push({ org, paused: isPaused(config, org), postingMode: profile.postingMode, due, skipped });
     }
@@ -283,7 +297,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (wasRequested && !(await requested()).includes(me)) {
       await send(gh, 'POST', `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`, { reviewers: [me] }).catch((e: Error) => logEvent(draft.org, 'request-not-restored', { pr: key, error: e.message.slice(0, 200) }));
     }
-    state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, reviewId], commentIds: [...prev.commentIds, ...commentIds] };
+    state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, reviewId], commentIds: [...prev.commentIds, ...commentIds], ...(base ? { mergeBase: base } : {}), patchId: patchId(files) };
     saveState(draft.org, state);
     logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: keep.map((f) => ({ severity: f.severity, path: f.path, line: f.line, id: f.id, memory: f.memory ?? [] })) });
     print({ pr: key, reviewId, event: payload.event ?? 'PENDING', comments: commentIds.length, dropped });
@@ -595,6 +609,77 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
     if (changed) await commitMemory(orgDir(org), `facts: ${values.retire ? 'retire facts whose files are gone' : ''}${values.pin ? ' pin unpinned cites' : ''}`.trim());
     print({ changed, notCurrent: report });
+    return 0;
+  },
+
+  /**
+   * Token use per subagent for one Claude Code session, read from its transcripts. Defaults to the
+   * newest session run from this folder. With --org, logs it as a usage event.
+   */
+  async tokens(args) {
+    const { values } = parseArgs({ args, options: { session: { type: 'string' }, org: { type: 'string' }, label: { type: 'string' }, cwd: { type: 'string' } } });
+    const projects = join(homedir(), '.claude', 'projects', (values.cwd ?? process.cwd()).replace(/[^A-Za-z0-9]/g, '-'));
+    if (!existsSync(projects)) throw new Error(`no Claude Code transcripts at ${projects}`);
+    const session =
+      values.session ??
+      readdirSync(projects)
+        .filter((f) => f.endsWith('.jsonl'))
+        .map((f) => ({ id: f.replace(/\.jsonl$/, ''), t: statSync(join(projects, f)).mtimeMs }))
+        .sort((a, b) => b.t - a.t)[0]?.id;
+    if (!session) throw new Error('no sessions found');
+    const byAgent: Record<string, Record<string, Usage>> = { main: usageByModel(readFileSync(join(projects, `${session}.jsonl`), 'utf8')) };
+    const subDir = join(projects, session, 'subagents');
+    for (const f of existsSync(subDir) ? readdirSync(subDir).filter((x) => x.endsWith('.jsonl')) : []) {
+      const meta = readJson<{ agentType?: string }>(join(subDir, f.replace(/\.jsonl$/, '.meta.json')), {});
+      const type = meta.agentType ?? 'unknown';
+      byAgent[type] = mergeUsage(byAgent[type] ?? {}, usageByModel(readFileSync(join(subDir, f), 'utf8')));
+    }
+    const totals = Object.values(byAgent).reduce((t, u) => mergeUsage(t, u), {} as Record<string, Usage>);
+    if (values.org) logEvent(values.org, 'usage', { session, label: values.label ?? '', byAgent, totals });
+    print({ session, byAgent, totals });
+    return 0;
+  },
+
+  /**
+   * A cache key for one stage of an eval case: the same head, base, prompts and memory give the same
+   * key, so a rerun reuses the stage's output instead of paying for it again.
+   */
+  async stagekey(args) {
+    const [org, stage, head, lens] = args;
+    if (!org || !stage || !head) throw new Error('usage: sous stagekey <org> <gatherer|lens|verifier> <head> [lens]');
+    const here = join(import.meta.dirname, '..');
+    const hashFile = (p: string) => (existsSync(p) ? createHash('sha256').update(readFileSync(p)).digest('hex') : 'none');
+    const memoryHead = (await run('git', ['rev-parse', 'HEAD'], { cwd: orgDir(org) }).catch(() => ({ stdout: 'none' }))).stdout.trim();
+    const parts = [stage, lens ?? '', head, hashFile(join(here, '.claude', 'agents', `${stage}.md`)), lens ? hashFile(join(here, 'prompts', 'lenses', `${lens}.md`)) : '', hashFile(join(meDir(), 'habits.md')), memoryHead];
+    const key = createHash('sha256').update(parts.join('\n')).digest('hex').slice(0, 24);
+    const path = join(sousHome(), 'cache', 'stages', `${key}.json`);
+    print({ key, path, cached: existsSync(path) });
+    return 0;
+  },
+
+  /** What Sous has done in an org, from its event log: reviews, findings, refusals, drops and token use. */
+  async stats(args) {
+    const [org, sinceArg] = args;
+    if (!org) throw new Error('usage: sous stats <org> [since ISO date]');
+    const since = sinceArg ?? new Date(Date.now() - 30 * 86_400_000).toISOString();
+    const log = join(orgDir(org), 'events.jsonl');
+    const events = (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []).map((l) => JSON.parse(l) as { at: string; type: string; event?: string; findings?: { severity: string }[]; totals?: Record<string, Usage> }).filter((e) => e.at >= since);
+    const count = (f: (e: (typeof events)[number]) => boolean) => events.filter(f).length;
+    const severities: Record<string, number> = {};
+    for (const e of events.filter((e) => e.type === 'reviewed')) for (const f of e.findings ?? []) severities[f.severity] = (severities[f.severity] ?? 0) + 1;
+    const tokens = events.filter((e) => e.type === 'usage').reduce((t, e) => mergeUsage(t, e.totals ?? {}), {} as Record<string, Usage>);
+    print({
+      since,
+      reviews: { posted: count((e) => e.type === 'reviewed' && e.event !== 'NONE'), nothingToPost: count((e) => e.type === 'reviewed' && e.event === 'NONE'), requestChanges: count((e) => e.event === 'REQUEST_CHANGES') },
+      findings: severities,
+      refusedByLint: count((e) => e.type === 'lint-refused'),
+      droppedAtPost: count((e) => e.type === 'dropped'),
+      rebaseSkips: count((e) => e.type === 'rebase-skip'),
+      replies: count((e) => e.type === 'replied'),
+      resolved: count((e) => e.type === 'resolved'),
+      dismissed: count((e) => e.type === 'dismissed'),
+      tokens,
+    });
     return 0;
   },
 

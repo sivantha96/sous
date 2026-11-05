@@ -28,3 +28,16 @@ test('a head you reviewed yourself is not due; Sous reviews do not count as your
   assert.equal(yourLatestHead([r('me', 'a', '2026-11-01'), r('me', 'b', '2026-11-02', 'x <!-- sous:bbbbbbbbbbbb -->')], 'me'), 'a');
   assert.equal(yourLatestHead([], 'me'), null);
 });
+
+test('patch id ignores line numbers, so a rebase that moves nothing keeps it', async () => {
+  const { patchId, pushScope } = await import('../src/due.ts');
+  const a = patchId([{ filename: 'a.ts', patch: '@@ -1,2 +1,2 @@\n x\n-old\n+new' }]);
+  const moved = patchId([{ filename: 'a.ts', patch: '@@ -40,2 +40,2 @@\n x\n-old\n+new' }]);
+  const changed = patchId([{ filename: 'a.ts', patch: '@@ -1,2 +1,2 @@\n x\n-old\n+newer' }]);
+  assert.equal(a, moved);
+  assert.notEqual(a, changed);
+  assert.equal(pushScope({ head: 'h1', patchId: a }, { compareStatus: 'diverged', mergeBase: 'm2', patchId: moved }), 'skip');
+  assert.equal(pushScope({ head: 'h1', mergeBase: 'm1', patchId: a }, { compareStatus: 'ahead', mergeBase: 'm1', patchId: changed }), 'incremental');
+  assert.equal(pushScope({ head: 'h1', mergeBase: 'm1', patchId: a }, { compareStatus: 'ahead', mergeBase: 'm2', patchId: changed }), 'full');
+  assert.equal(pushScope({ head: 'h1', mergeBase: 'm1', patchId: a }, { compareStatus: 'diverged', mergeBase: 'm1', patchId: changed }), 'full');
+});

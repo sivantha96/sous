@@ -42,6 +42,9 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `sous status` | Sous's reviews, blocking reviews and findings on one PR |
 | `sous replay build` | Builds replay cases from your past reviews in an org |
 | `sous score` | Scores an eval run against the cases; `--gate` fails on a drop, `--accept` sets the baseline |
+| `sous tokens` | Token use per subagent and model for a session, from Claude Code transcripts; `--org` logs it |
+| `sous stagekey` | Cache key for one eval stage (same head, prompts and memory, same key), so reruns reuse it |
+| `sous stats` | Reviews, findings, refusals, drops, replies and tokens from the event log; `/stats` answers questions from it |
 | `sous pause [org]` / `resume [org]` | Stops posting; reviews become pending drafts |
 
 ## Subagents
