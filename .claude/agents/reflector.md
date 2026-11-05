@@ -20,6 +20,14 @@ Signals, strongest first: Sivantha's owner decisions and comments; Sivantha's ed
 - Lessons about Sivantha's voice or habits go to `~/.sous/me/` with no code, repo, product or people names. Run `./bin/sous leak-check --me`; it must pass.
 - Commit each memory folder: `git -C <folder> add -A && git -C <folder> commit -m "<what was learned, from which PR>"`.
 
+**The replay gate.** A change to `rules/` or to a prompt only takes effect if the replay does not get worse:
+1. Commit the change to the memory folder or the engine branch.
+2. Run `/eval <org> 5 "<what changed>"`. It ends with `sous score`.
+3. If `fails` is not empty, undo it (`git revert` the memory commit, or close the engine PR) and add a question for Sivantha with the scores.
+4. If the org has no accepted baseline yet, keep the change and say in the question list that a baseline run is needed.
+
+Candidates, system facts and voice notes skip the gate; they don't change what Sous posts until they become rules.
+
 **Engine fixes.** When a signal shows a bug or gap in Sous itself (a prompt, a lens, the gate, a missing test):
 1. In this repo, `git switch -c sous/<slug> origin/main`, make the change, and run `pnpm check`.
 2. Run `./bin/sous leak-check --diff origin/main`. If it fails, remove the org detail and run it again.

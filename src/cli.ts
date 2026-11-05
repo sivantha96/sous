@@ -1,15 +1,18 @@
 import { execFile } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config } from './config.ts';
 import { findDue } from './due.ts';
 import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
 import { get, getAll, ghFor, whoami } from './gh.ts';
-import { meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
+import { appendLine, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
 import { buildDenylist, findLeaks } from './leak.ts';
-import { buildReview, dismissOwn, LintError, postReview, type Draft } from './post.ts';
-import { loadState, logEvent, prKey, saveState } from './state.ts';
+import { buildReview, dismissOwn, hasMarker, LintError, marker, postReview, type Draft } from './post.ts';
+import { commitAt, gateFails, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
+import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
+import { lintText } from './voice-lint.ts';
+import { emptyPr, loadState, logEvent, prKey, saveState } from './state.ts';
 
 const run = promisify(execFile);
 const print = (v: unknown): void => console.log(JSON.stringify(v, null, 2));
@@ -52,7 +55,7 @@ async function baseline(org: string, account: string): Promise<number> {
       const key = prKey(repo, item.number);
       if (state.prs[key]) continue;
       const pull = await get<{ head: { sha: string } }>(gh, `repos/${repo}/pulls/${item.number}`);
-      state.prs[key] = { head: pull.head.sha, reviewedAt: '', reviewIds: [], commentIds: [] };
+      state.prs[key] = emptyPr(pull.head.sha);
       marked++;
     }
   }
@@ -186,12 +189,13 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const { reviewId, commentIds } = await postReview(gh, draft, payload);
     const state = loadState(draft.org);
     const key = prKey(draft.repo, draft.number);
-    const prev = state.prs[key];
+    const prev = state.prs[key] ?? emptyPr(draft.head);
     state.prs[key] = {
+      ...prev,
       head: draft.head,
       reviewedAt: new Date().toISOString(),
-      reviewIds: [...(prev?.reviewIds ?? []), reviewId],
-      commentIds: [...(prev?.commentIds ?? []), ...commentIds],
+      reviewIds: [...prev.reviewIds, reviewId],
+      commentIds: [...prev.commentIds, ...commentIds],
     };
     saveState(draft.org, state);
     logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: draft.findings.map((f) => ({ severity: f.severity, path: f.path, line: f.line })) });
@@ -205,11 +209,99 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (!org || !repo || !n || !head || !/^[0-9a-f]{40}$/.test(head)) throw new Error('usage: sous mark <org> <owner/repo> <number> <40-char head>');
     const state = loadState(org);
     const key = prKey(repo, Number(n));
-    const prev = state.prs[key];
-    state.prs[key] = { head, reviewedAt: new Date().toISOString(), reviewIds: prev?.reviewIds ?? [], commentIds: prev?.commentIds ?? [] };
+    state.prs[key] = { ...(state.prs[key] ?? emptyPr(head)), head, reviewedAt: new Date().toISOString() };
     saveState(org, state);
     logEvent(org, 'reviewed', { pr: key, head, event: 'NONE', findings: [] });
     print({ pr: key, head, event: 'NONE' });
+    return 0;
+  },
+
+  /** Replies in a thread Sous started. Never in a thread you or anyone else started. */
+  async reply(args) {
+    const [org, repo, n, id, file] = args;
+    if (!org || !repo || !n || !id || !file) throw new Error('usage: sous reply <org> <owner/repo> <number> <sous-comment-id> <text-file>');
+    const config = loadConfig();
+    const profile = loadProfile(org);
+    const state = loadState(org);
+    const key = prKey(repo, Number(n));
+    const pr = state.prs[key];
+    assertOwnThread(pr, Number(id));
+    const text = readFileSync(file, 'utf8').trim();
+    const problems = lintText(text);
+    if (problems.length) {
+      logEvent(org, 'lint-refused', { pr: key, reply: Number(id), problems });
+      throw new LintError(problems);
+    }
+    if (isPaused(config, org)) throw new Error(`${org} is paused; not replying`);
+    const gh = await ghFor(profile.ghAccount);
+    const body = `${text}\n\n_${config.attribution}_\n\n${marker(pr.head)}`;
+    const posted = JSON.parse(await gh(['api', '-X', 'POST', `repos/${repo}/pulls/${n}/comments/${id}/replies`, '--input', '-'], JSON.stringify({ body }))) as { id: number };
+    pr.replyIds.push(posted.id);
+    saveState(org, state);
+    logEvent(org, 'replied', { pr: key, thread: Number(id), reply: posted.id });
+    print({ replied: posted.id });
+    return 0;
+  },
+
+  /** Resolves a thread Sous started, once its point is fixed or withdrawn. */
+  async resolve(args) {
+    const [org, repo, n, id] = args;
+    if (!org || !repo || !n || !id) throw new Error('usage: sous resolve <org> <owner/repo> <number> <sous-comment-id>');
+    const profile = loadProfile(org);
+    const key = prKey(repo, Number(n));
+    assertOwnThread(loadState(org).prs[key], Number(id));
+    const gh = await ghFor(profile.ghAccount);
+    const thread = await threadIdFor(gh, repo, Number(n), Number(id));
+    if (!thread) throw new Error(`no review thread starts with comment ${id}`);
+    if (!thread.isResolved) {
+      await gh(['api', 'graphql', '-f', 'query=mutation($id:ID!){resolveReviewThread(input:{threadId:$id}){thread{isResolved}}}', '-F', `id=${thread.id}`]);
+      logEvent(org, 'resolved', { pr: key, thread: Number(id) });
+    }
+    print({ resolved: Number(id) });
+    return 0;
+  },
+
+  /** Marks replies and reactions as judged, so the next run does not judge them again. */
+  async seen(args) {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { replies: { type: 'string' } } });
+    const [org, repo, n] = positionals;
+    if (!org || !repo || !n) throw new Error('usage: sous seen <org> <owner/repo> <number> [--replies id,id]');
+    const profile = loadProfile(org);
+    const state = loadState(org);
+    const key = prKey(repo, Number(n));
+    const pr = state.prs[key];
+    if (!pr) throw new Error(`${key} is not in state`);
+    const ids = (values.replies ?? '').split(',').filter(Boolean).map(Number);
+    pr.handled = [...new Set([...pr.handled, ...ids])];
+    // Reactions: record today's counts on every Sous comment.
+    const gh = await ghFor(profile.ghAccount);
+    for (const c of await getAll<PrComment>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`)) {
+      if (pr.commentIds.includes(c.id)) pr.reactions[String(c.id)] = c.reactions?.total_count ?? 0;
+    }
+    saveState(org, state);
+    logEvent(org, 'seen', { pr: key, replies: ids });
+    print({ handled: pr.handled.length });
+    return 0;
+  },
+
+  /** Sous's record for one PR, with the live state of its reviews and threads. */
+  async status(args) {
+    const [org, repo, n] = args;
+    if (!org || !repo || !n) throw new Error('usage: sous status <org> <owner/repo> <number>');
+    const profile = loadProfile(org);
+    const pr = loadState(org).prs[prKey(repo, Number(n))];
+    if (!pr) throw new Error('not in state');
+    const gh = await ghFor(profile.ghAccount);
+    const reviews = await getAll<{ id: number; state: string; commit_id: string }>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`);
+    const comments = await getAll<PrComment & { original_commit_id: string }>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`);
+    print({
+      head: pr.head,
+      reviews: reviews.filter((r) => pr.reviewIds.includes(r.id)).map((r) => ({ id: r.id, state: r.state, commit: r.commit_id })),
+      blocking: reviews.filter((r) => pr.reviewIds.includes(r.id) && r.state === 'CHANGES_REQUESTED').map((r) => r.id),
+      findings: comments
+        .filter((c) => pr.commentIds.includes(c.id))
+        .map((c) => ({ id: c.id, path: c.path, line: c.line, outdated: c.line === null, body: c.body.split('\n\n')[0], sous: hasMarker(c.body) })),
+    });
     return 0;
   },
 
@@ -242,6 +334,85 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     for (const l of leaks) console.error(`${l.file}:${l.line}: "${l.term}" in: ${l.text}`);
     console.error(leaks.length ? `${leaks.length} leak(s)` : 'no leaks');
     return leaks.length ? 1 : 0;
+  },
+
+  /** Builds replay cases from your past reviews in an org: one per PR, at the commit with most of your points. */
+  async replay(args) {
+    const [sub, org] = args;
+    if (sub !== 'build' || !org) throw new Error('usage: sous replay build <org>');
+    const profile = loadProfile(org);
+    const gh = await ghFor(profile.ghAccount);
+    const me = await whoami(gh);
+    const found = new Map<string, { number: number; repository_url: string }>();
+    for (const q of [`commenter:${me}`, `reviewed-by:${me}`]) {
+      for (const i of await getAll<{ number: number; repository_url: string }>(gh, `search/issues?per_page=100&q=${encodeURIComponent(`is:pr org:${org} -author:${me} ${q}`)}`)) {
+        found.set(`${i.repository_url}#${i.number}`, i);
+      }
+    }
+    const dir = join(orgDir(org), 'replay', 'cases');
+    mkdirSync(dir, { recursive: true });
+    let written = 0;
+    for (const item of found.values()) {
+      const repo = item.repository_url.split('/repos/')[1]!;
+      const n = item.number;
+      const pull = await get<{ base: { ref: string } }>(gh, `repos/${repo}/pulls/${n}`);
+      const commits = (await getAll<{ sha: string; commit: { committer: { date: string } } }>(gh, `repos/${repo}/pulls/${n}/commits?per_page=100`)).map((c) => ({ sha: c.sha, date: c.commit.committer.date }));
+      const byCommit = new Map<string, { gold: Gold[]; first: string }>();
+      const add = (sha: string | null, g: Gold, at: string) => {
+        if (!sha) return;
+        const e = byCommit.get(sha) ?? { gold: [], first: at };
+        e.gold.push(g);
+        if (at < e.first) e.first = at;
+        byCommit.set(sha, e);
+      };
+      const inline = await getAll<PrComment & { original_line: number | null; original_commit_id: string; created_at: string }>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`);
+      for (const c of inline) {
+        if (c.user?.login !== me || c.in_reply_to_id || hasMarker(c.body) || !c.original_line) continue;
+        add(c.original_commit_id, { path: c.path, line: c.original_line, text: c.body.slice(0, 500), source: 'inline' }, c.created_at);
+      }
+      const issue = await getAll<{ user: { login: string } | null; body: string; created_at: string }>(gh, `repos/${repo}/issues/${n}/comments?per_page=100`);
+      for (const c of issue) {
+        if (c.user?.login !== me || hasMarker(c.body)) continue;
+        for (const g of parseAiReview(c.body)) add(commitAt(commits, c.created_at), { ...g, source: 'ai-review' }, c.created_at);
+      }
+      const best = [...byCommit.entries()].sort((a, b) => b[1].gold.length - a[1].gold.length)[0];
+      if (!best) continue;
+      const [head, { gold, first }] = best;
+      const id = `${repo.split('/')[1]}-${n}-${head.slice(0, 12)}`;
+      const c: Case = { id, org, repo, number: n, head, base: pull.base.ref, me, before: first, gold };
+      writeJson(join(dir, `${id}.json`), c);
+      written++;
+    }
+    await commitMemory(orgDir(org), `replay: ${written} cases from your past reviews`);
+    print({ cases: written, dir });
+    return 0;
+  },
+
+  /** Scores an eval run (one draft per case) against the cases, and gates it against the accepted baseline. */
+  async score(args) {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { label: { type: 'string' }, accept: { type: 'boolean' }, gate: { type: 'boolean' } } });
+    const [org, runDir] = positionals;
+    if (!org || !runDir) throw new Error('usage: sous score <org> <run-dir> [--label <text>] [--gate] [--accept]');
+    const casesDir = join(orgDir(org), 'replay', 'cases');
+    const scores = readdirSync(runDir)
+      .filter((f) => f.endsWith('.json'))
+      .flatMap((f) => {
+        const id = f.replace(/\.json$/, '');
+        const c = readJson<Case | null>(join(casesDir, f), null);
+        if (!c) return [];
+        const draft = readJson<{ findings?: Draft['findings'] }>(join(runDir, f), {});
+        return [scoreCase(id, c.gold, draft.findings ?? [])];
+      });
+    if (scores.length === 0) throw new Error(`no drafts in ${runDir} match a case in ${casesDir}`);
+    const now = totals(scores);
+    const log = join(orgDir(org), 'replay', 'scores.jsonl');
+    const history = existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l) as Totals & { accepted?: boolean }) : [];
+    const baseline = [...history].reverse().find((h) => h.accepted) ?? null;
+    const fails = gateFails(now, baseline);
+    const accepted = Boolean(values.accept) && fails.length === 0;
+    appendLine(log, { at: new Date().toISOString(), label: values.label ?? '', ...now, accepted });
+    print({ ...now, baseline, fails, accepted, perCase: scores });
+    return values.gate && fails.length ? 1 : 0;
   },
 
   async pause(args) {

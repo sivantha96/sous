@@ -31,6 +31,11 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `sous mark` | Records a head reviewed with nothing to post |
 | `sous dismiss` | Dismisses a request-changes review, only one Sous wrote |
 | `sous leak-check` | Fails when text bound for git names anything from local org memory |
+| `sous reply` / `resolve` | Replies in, or resolves, a thread Sous started; refuses any other thread |
+| `sous seen` | Marks teammate replies and reactions as judged |
+| `sous status` | Sous's reviews, blocking reviews and findings on one PR |
+| `sous replay build` | Builds replay cases from your past reviews in an org |
+| `sous score` | Scores an eval run against the cases; `--gate` fails on a drop, `--accept` sets the baseline |
 | `sous pause [org]` / `resume [org]` | Stops posting; reviews become pending drafts |
 
 ## Subagents
@@ -42,7 +47,8 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `verifier` | Opus | Re-reads every candidate at the head; drops what it can't prove |
 | `writer` | Opus | Writes the review in your voice and runs `sous post` |
 | `signal-collector` | Haiku | What changed since the last learning round |
-| `reflector` | Opus | Memory edits, engine PRs, questions for you |
+| `reply-judge` | Sonnet, Opus for hard cases | Weighs teammates' replies and reactions: adopts, withdraws, answers once, or asks you |
+| `reflector` | Opus | Memory edits behind the replay gate, engine PRs, questions for you |
 
 ## Rules this code enforces
 

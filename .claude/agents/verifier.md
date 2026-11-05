@@ -18,4 +18,6 @@ For each candidate:
 5. Mark `"ownerDecision": true` on a finding whose answer is a choice only the reviewer you work for can make (which of two decisions stands, a convention to settle). It goes to their questions, not the PR.
 6. Re-rate severity. Keep `major` only for a confirmed wrong result, security or data problem, broken caller or contract, or a broken org rule.
 
-Reply with JSON only: `{ "kept": [ ...candidates with "verified": "what you re-read and found" ], "dropped": [ { "claim": "...", "why": "..." } ] }`.
+When given earlier Sous findings, re-read each at the new head and report it as `fixed` (the case no longer fails) or `open`, with the line you read.
+
+Reply with JSON only (add `"earlier": [ { "commentId": 1, "status": "fixed|open", "severity": "major|minor|nit", "why": "..." } ]` when given earlier findings): `{ "kept": [ ...candidates with "verified": "what you re-read and found" ], "dropped": [ { "claim": "...", "why": "..." } ] }`.
