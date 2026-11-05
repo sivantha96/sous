@@ -25,6 +25,9 @@ export interface ReviewPayload {
 export const marker = (head: string): string => `<!-- sous:${head.slice(0, 12)} -->`;
 export const hasMarker = (body: string | null | undefined): boolean => /<!-- sous:[0-9a-f]+ -->/.test(body ?? '');
 
+/** Every comment and reply Sous posts ends with the italic attribution, then the hidden marker. */
+export const signed = (text: string, attribution: string, head: string): string => `${text.trim()}\n\n_${attribution}_\n\n${marker(head)}`;
+
 const render = (f: Finding): string => (f.fix?.trim() ? `${f.body}\n\nFix: ${f.fix}` : f.body);
 
 /** RIGHT-side line numbers a review comment may anchor to: lines a hunk adds or keeps. */
@@ -56,6 +59,7 @@ export function buildReview(
   opts: { pending: boolean; attribution: string; files: { filename: string; patch?: string }[] },
 ): ReviewPayload {
   const problems = d.findings.flatMap((f) => lintFinding(f).map((p) => `${f.path}:${f.line}: ${p}`));
+  for (const f of d.findings.filter((f) => f.owner)) problems.push(`${f.path}:${f.line}: owner decision; it goes to questions.md, never the PR`);
   if (d.findings.length === 0) problems.push('no findings; record the head with `sous mark` instead');
   if (!/^[0-9a-f]{40}$/.test(d.head)) problems.push('head is not a full commit sha');
   const anchors = new Map(opts.files.map((f) => [f.filename, rightLines(f.patch)]));
@@ -64,12 +68,11 @@ export function buildReview(
   }
   if (problems.length) throw new LintError(problems);
 
-  const sign = `_${opts.attribution}_\n\n${marker(d.head)}`;
   // No review body: the inline comments are the whole review.
   const payload: ReviewPayload = {
     commit_id: d.head,
     body: '',
-    comments: d.findings.map((f) => ({ path: f.path, line: f.line, side: 'RIGHT', body: `${render(f)}\n\n${sign}` })),
+    comments: d.findings.map((f) => ({ path: f.path, line: f.line, side: 'RIGHT', body: signed(render(f), opts.attribution, d.head) })),
   };
   if (!opts.pending) payload.event = d.findings.some((f) => f.severity === 'major') ? 'REQUEST_CHANGES' : 'COMMENT';
   return payload;

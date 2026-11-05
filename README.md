@@ -47,6 +47,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `verifier` | Opus | Re-reads every candidate at the head; drops what it can't prove |
 | `writer` | Opus | Writes the review in your voice and runs `sous post` |
 | `signal-collector` | Haiku | What changed since the last learning round |
+| `match-judge` | Haiku | In `/eval`, pairs your points with Sous findings that make the same point anywhere |
 | `reply-judge` | Sonnet, Opus for hard cases | Weighs teammates' replies and reactions: adopts, withdraws, answers once, or asks you |
 | `reflector` | Opus | Memory edits behind the replay gate, engine PRs, questions for you |
 

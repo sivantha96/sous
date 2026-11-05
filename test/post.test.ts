@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildReview as build, dismissOwn, hasMarker, LintError, rightLines, type Draft } from '../src/post.ts';
+import { buildReview as build, dismissOwn, hasMarker, LintError, rightLines, signed, type Draft } from '../src/post.ts';
 import type { Gh } from '../src/gh.ts';
 
 const head = 'a'.repeat(40);
@@ -58,4 +58,14 @@ test('dismissOwn refuses a review Sous did not write', async () => {
   await assert.rejects(dismissOwn(fake({ user: { login: 'me' }, state: 'CHANGES_REQUESTED', body: '' }, sous), 'o/r', 1, 7, 'me', [], 'fixed'), /not a Sous review/);
   // Someone else's account.
   await assert.rejects(dismissOwn(fake({ user: { login: 'them' }, state: 'CHANGES_REQUESTED', body: '' }, sous), 'o/r', 1, 7, 'me', [7], 'fixed'), /not a Sous review/);
+});
+
+test('replies are signed the same way as review comments', () => {
+  const body = signed('fixed in abc123, resolving', "Posted by Sam's AI review bot \u2014 not a human review.", head);
+  assert.match(body, /\n\n_Posted by Sam's AI review bot \u2014 not a human review\._\n\n<!-- sous:/);
+  assert.ok(hasMarker(body));
+});
+
+test('an owner decision is never posted', () => {
+  assert.throws(() => buildReview(draft([{ ...major, owner: true }]), { pending: false }), /owner decision/);
 });

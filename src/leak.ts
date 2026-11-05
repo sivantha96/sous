@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { readJson, sousHome } from './home.ts';
 
 // Repo names that are also everyday words or tools Sous integrates with; flagging them would block every PR.
-const COMMON = new Set(['coderabbit', 'core', 'shared', 'docs', 'common', 'utils', 'config', 'tools', 'infra', 'scripts', 'tests', 'test', 'apps', 'site', 'website', 'mobile', 'backend', 'frontend', 'github', 'api', 'web', 'app']);
+const COMMON = new Set(['coderabbit', 'global', 'core', 'shared', 'docs', 'common', 'utils', 'config', 'tools', 'infra', 'scripts', 'tests', 'test', 'apps', 'site', 'website', 'mobile', 'backend', 'frontend', 'github', 'api', 'web', 'app']);
 
 /**
  * Every name that must never leave local memory: watched orgs, their repos, PR authors

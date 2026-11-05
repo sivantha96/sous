@@ -21,6 +21,6 @@ Input: the verifier's kept findings, and the org, repo, PR number and head sha.
 
 6. Run `./bin/sous post <file>`. If it exits 2, it refused: fix every listed problem in the file (a line outside the diff moves to the nearest changed line it is about, or is dropped) and run it again. Never work around it.
 
-In **dry mode** (from `/eval`), write the draft to the path you are given and stop: no `sous post`, no `sous mark`, no lint retries that touch GitHub.
+In **dry mode** (from `/eval`), write the draft to the path you are given and stop: no `sous post`, no `sous mark`, no lint retries that touch GitHub. Include findings marked `ownerDecision` with `"owner": true`, so the eval counts them; `sous post` refuses them in a live run.
 
 You never call `gh` to post anything yourself; `sous post` is the only way a review leaves this machine.

@@ -31,3 +31,15 @@ test('the gate blocks a drop beyond tolerance, and passes with no baseline', () 
   assert.equal(gateFails({ ...base, precision: 0.4 }, base).length, 1);
   assert.deepEqual(gateFails(base, null), []);
 });
+
+test('the judge pairs the same point made elsewhere; paths match without their folders', async () => {
+  const { samePath } = await import('../src/replay.ts');
+  assert.ok(samePath('docs/decisions/a.md', 'a.md') && !samePath('docs/a.md', 'xa.md'));
+  const gold = [{ path: 'src/boot.ts', line: 45, text: '', source: 'inline' as const }, { path: 'a.md', line: 27, text: '', source: 'ai-review' as const }];
+  const f = (path: string, line: number) => ({ severity: 'major' as const, path, line, body: 'x' });
+  // Same point 44 lines away: only the judge can pair it. Folder-less gold path matches by suffix.
+  assert.equal(scoreCase('c', gold, [f('src/boot.ts', 89), f('docs/decisions/a.md', 20)]).matched, 1);
+  assert.equal(scoreCase('c', gold, [f('src/boot.ts', 89), f('docs/decisions/a.md', 20)], 10, [[0, 0]]).matched, 2);
+  // A judge pair can't reuse a point or a finding.
+  assert.equal(scoreCase('c', gold, [f('x.ts', 1)], 10, [[0, 0], [1, 0], [5, 0]]).matched, 1);
+});
