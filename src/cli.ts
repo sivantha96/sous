@@ -18,13 +18,14 @@ import { commitAt, gateFails, lensRecall, meanTotals, parseAiReview, scoreCase, 
 import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
 import { codeLinks, plan } from './plan.ts';
-import { mergeUsage, usageByModel, type Usage } from './usage.ts';
+import { mergeUsage, spanSeconds, usageByModel, type Usage } from './usage.ts';
+import { retro } from './retro.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { diffTerms, factState, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
-import { emptyPr, loadState, logEvent, prKey, saveState } from './state.ts';
+import { emptyPr, loadState, logEvent, prKey, readEvents, saveState } from './state.ts';
 
 const run = promisify(execFile);
 
@@ -804,16 +805,21 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
         .map((f) => ({ id: f.replace(/\.jsonl$/, ''), t: statSync(join(projects, f)).mtimeMs }))
         .sort((a, b) => b.t - a.t)[0]?.id;
     if (!session) throw new Error('no sessions found');
-    const byAgent: Record<string, Record<string, Usage>> = { main: usageByModel(readFileSync(join(projects, `${session}.jsonl`), 'utf8')) };
+    const mainLog = readFileSync(join(projects, `${session}.jsonl`), 'utf8');
+    const byAgent: Record<string, Record<string, Usage>> = { main: usageByModel(mainLog) };
+    // Wall time: the main session's span is the run's; a type's is the sum of its subagents' spans.
+    const seconds: Record<string, number> = { main: spanSeconds(mainLog) };
     const subDir = join(projects, session, 'subagents');
     for (const f of existsSync(subDir) ? readdirSync(subDir).filter((x) => x.endsWith('.jsonl')) : []) {
       const meta = readJson<{ agentType?: string }>(join(subDir, f.replace(/\.jsonl$/, '.meta.json')), {});
       const type = meta.agentType ?? 'unknown';
-      byAgent[type] = mergeUsage(byAgent[type] ?? {}, usageByModel(readFileSync(join(subDir, f), 'utf8')));
+      const log = readFileSync(join(subDir, f), 'utf8');
+      byAgent[type] = mergeUsage(byAgent[type] ?? {}, usageByModel(log));
+      seconds[type] = (seconds[type] ?? 0) + spanSeconds(log);
     }
     const totals = Object.values(byAgent).reduce((t, u) => mergeUsage(t, u), {} as Record<string, Usage>);
-    if (values.org) logEvent(values.org, 'usage', { session, label: values.label ?? '', byAgent, totals });
-    print({ session, byAgent, totals });
+    if (values.org) logEvent(values.org, 'usage', { session, label: values.label ?? '', byAgent, totals, seconds });
+    print({ session, byAgent, totals, seconds });
     return 0;
   },
 
@@ -839,8 +845,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const [org, sinceArg] = args;
     if (!org) throw new Error('usage: sous stats <org> [since ISO date]');
     const since = sinceArg ?? new Date(Date.now() - 30 * 86_400_000).toISOString();
-    const log = join(orgDir(org), 'events.jsonl');
-    const events = (existsSync(log) ? readFileSync(log, 'utf8').split('\n').filter(Boolean) : []).map((l) => JSON.parse(l) as { at: string; type: string; event?: string; findings?: { severity: string }[]; totals?: Record<string, Usage> }).filter((e) => e.at >= since);
+    const events = readEvents(org).filter((e) => e.at >= since) as { at: string; type: string; event?: string; findings?: { severity: string }[]; totals?: Record<string, Usage> }[];
     const count = (f: (e: (typeof events)[number]) => boolean) => events.filter(f).length;
     const severities: Record<string, number> = {};
     for (const e of events.filter((e) => e.type === 'reviewed')) for (const f of e.findings ?? []) severities[f.severity] = (severities[f.severity] ?? 0) + 1;
@@ -857,6 +862,14 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       dismissed: count((e) => e.type === 'dismissed'),
       tokens,
     });
+    return 0;
+  },
+
+  /** The last run for the learning round: its problems, its cost and time, and the recent median. */
+  async retro(args) {
+    const [org, since] = args;
+    if (!org || !since || Number.isNaN(Date.parse(since))) throw new Error('usage: sous retro <org> <run start ISO time>');
+    print(retro(readEvents(org), since));
     return 0;
   },
 
