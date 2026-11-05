@@ -3,8 +3,10 @@ import { gate, readCodeRabbit, type GateResult } from './gate.ts';
 import { get, getAll, type Gh } from './gh.ts';
 import { hasMarker } from './post.ts';
 import { prKey, type OrgState } from './state.ts';
+import { threadSignals, type PrComment, type ThreadSignal } from './threads.ts';
 
-export type Reason = 'NEW' | 'PUSHED';
+/** REPLY: teammates replied or reacted on Sous's comments, with no new push to review. */
+export type Reason = 'NEW' | 'PUSHED' | 'REPLY';
 
 export interface DueItem {
   org: string;
@@ -15,6 +17,8 @@ export interface DueItem {
   base: string;
   reason: Reason;
   gate: GateResult;
+  /** Replies and reactions on Sous's threads, for the reply judge. Empty when there are none. */
+  threads: ThreadSignal[];
 }
 
 // Lockfiles and generated output carry no reviewable intent.
@@ -47,8 +51,9 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
   return out;
 }
 
-/** Pushes before new PRs: an author waiting on a re-review is blocked on you. */
-export const byPriority = (a: DueItem, b: DueItem): number => (a.reason === b.reason ? 0 : a.reason === 'PUSHED' ? -1 : 1);
+const RANK: Record<Reason, number> = { REPLY: 0, PUSHED: 1, NEW: 2 };
+/** Replies first, then pushes, then new PRs: a waiting author is blocked on you. */
+export const byPriority = (a: DueItem, b: DueItem): number => RANK[a.reason] - RANK[b.reason];
 
 interface SearchItem {
   number: number;
@@ -80,8 +85,15 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
     const key = prKey(repo, item.number);
     if (pull.draft) return;
     if (pull.user.type === 'Bot') return void skipped.push({ pr: key, why: 'bot author' });
-    const reason = classify(state, repo, item.number, pull.head.sha);
-    if (!reason) return;
+    const seen = state.prs[key];
+    const threads = seen?.commentIds.length ? threadSignals(await getAll<PrComment>(gh, `repos/${repo}/pulls/${item.number}/comments?per_page=100`), seen, me) : [];
+    const pushed = classify(state, repo, item.number, pull.head.sha);
+    if (!pushed && threads.length === 0) return;
+    if (!pushed) {
+      due.push({ org: profile.org, repo, number: item.number, title: pull.title, head: pull.head.sha, base: pull.base.ref, reason: 'REPLY', gate: { action: 'review' }, threads });
+      return;
+    }
+    const reason = pushed;
     const reviews = await getAll<Parameters<typeof yourLatestHead>[0][number]>(gh, `repos/${repo}/pulls/${item.number}/reviews?per_page=100`);
     if (yourLatestHead(reviews, me) === pull.head.sha) return;
     const files = (await getAll<{ filename: string }>(gh, `repos/${repo}/pulls/${item.number}/files?per_page=100`)).map((f) => f.filename);
@@ -98,6 +110,7 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
       base: pull.base.ref,
       reason,
       gate: gate({ enabled: profile.coderabbit !== null, signal, pushedAt, runStartedAt, now: new Date() }),
+      threads,
     });
   });
   return { due: due.sort(byPriority), skipped };
