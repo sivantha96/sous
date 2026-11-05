@@ -9,10 +9,11 @@ import { lintText } from '../src/voice-lint.ts';
 test('denylist comes from local org folders and skips common words', () => {
   const home = mkdtempSync(join(tmpdir(), 'sous-'));
   mkdirSync(join(home, 'orgs', 'acme-labs'), { recursive: true });
-  writeFileSync(join(home, 'orgs', 'acme-labs', 'denylist.json'), JSON.stringify(['billing-service', 'core']));
+  writeFileSync(join(home, 'orgs', 'acme-labs', 'denylist.json'), JSON.stringify(['billing-service', 'core', '.github']));
   const list = buildDenylist(home);
   assert.ok(list.includes('acme-labs') && list.includes('billing-service') && list.includes('labs'));
   assert.ok(!list.includes('core'));
+  assert.ok(!list.includes('.github'), "GitHub's own folder name is not an org secret");
 });
 
 test('finds org names as whole words only', () => {
