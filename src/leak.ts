@@ -29,11 +29,13 @@ export interface Leak {
 
 const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
+// A home folder path names the person and the machine; config that needs one stays in a git-ignored file.
+const HOME_PATH = /(?:\/Users|\/home)\/[A-Za-z0-9._-]+/;
+
 export function findLeaks(text: string, denylist: string[]): Leak[] {
-  if (denylist.length === 0) return [];
-  const re = new RegExp(`(?<![A-Za-z0-9])(${denylist.map(escape).join('|')})(?![A-Za-z0-9])`, 'i');
+  const re = denylist.length ? new RegExp(`(?<![A-Za-z0-9])(${denylist.map(escape).join('|')})(?![A-Za-z0-9])`, 'i') : null;
   return text.split('\n').flatMap((line, i) => {
-    const m = re.exec(line);
-    return m ? [{ term: m[1]!, line: i + 1, text: line.trim().slice(0, 120) }] : [];
+    const m = re?.exec(line) ?? HOME_PATH.exec(line);
+    return m ? [{ term: m[1] ?? m[0], line: i + 1, text: line.trim().slice(0, 120) }] : [];
   });
 }

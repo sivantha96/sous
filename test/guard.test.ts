@@ -143,3 +143,14 @@ test('the verifier and writer never read the PR text; lenses do', () => {
   }
   assert.equal(decide({ tool_name: 'Read', tool_input: { file_path: f }, agent_type: 'lens' }).ok, true);
 });
+
+test('gh and sous run as a call of their own, since a chained one runs in the sandbox without the token', () => {
+  for (const role of ['main', roleOf('gatherer')] as const) {
+    assert.ok(!checkCommand('gh api user | jq .login', role, '/tmp').ok, role);
+    assert.ok(!checkCommand('./bin/sous due 2>&1 | head -3', role, '/tmp').ok, role);
+    assert.ok(!checkCommand('cd /tmp && gh pr view 1', role, '/tmp').ok, role);
+  }
+  assert.ok(checkCommand('./bin/sous due', 'main', '/tmp').ok);
+  assert.ok(checkCommand('./bin/sous due 2>&1', 'main', '/tmp').ok);
+  assert.ok(checkCommand('pnpm check && git push -u origin sous/x', 'main', '/tmp').ok);
+});
