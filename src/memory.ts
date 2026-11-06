@@ -84,7 +84,11 @@ export interface Hit {
   matchedBy: string[];
 }
 
-/** Bullets for a PR: scope matches score 2, each distinct term found scores 1. Highest first. */
+/**
+ * Bullets for a PR: scope matches score 2, each distinct term found scores 1. Highest first.
+ * `limit` caps the list, but a bullet scoped to paths the PR touches (not `all`) is never cut:
+ * otherwise the many `all` rules push a narrowly scoped owner decision off the end.
+ */
 export function searchMemory(bullets: Bullet[], paths: string[], terms: string[], limit = 40): Hit[] {
   const hits: Hit[] = [];
   for (const b of bullets) {
@@ -104,7 +108,9 @@ export function searchMemory(bullets: Bullet[], paths: string[], terms: string[]
     if (score > 0) hits.push({ bullet: b, score, matchedBy });
   }
   const rank = (h: Hit): number => (h.bullet.trust === 'lead' ? 0 : 1);
-  return hits.sort((a, b) => b.score - a.score || rank(a) - rank(b) || a.bullet.file.localeCompare(b.bullet.file) || a.bullet.line - b.bullet.line).slice(0, limit);
+  const sorted = hits.sort((a, b) => b.score - a.score || rank(a) - rank(b) || a.bullet.file.localeCompare(b.bullet.file) || a.bullet.line - b.bullet.line);
+  const scoped = (h: Hit): boolean => h.matchedBy[0] === 'scope' && !h.bullet.scope.includes('all');
+  return sorted.filter((h, i) => i < limit || scoped(h));
 }
 
 export type FactState = 'current' | 'stale' | 'gone' | 'unpinned';
