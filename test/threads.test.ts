@@ -20,3 +20,21 @@ test('handled replies and unchanged reactions are not signals again', () => {
   const more = [c(1, 'me', { reactions: { total_count: 2, '-1': 2 } }), c(2, 'dev', { in_reply_to_id: 1 })];
   assert.deepEqual(threadSignals(more, pr, 'me')[0]!.reactions, { total: 2, seenBefore: 1, up: 0, down: 2, confused: 0 });
 });
+
+test('Sous has the last word when its comment or its own reply ends the thread', async () => {
+  const { sousHasLastWord } = await import('../src/threads.ts');
+  const pr = { ...emptyPr('h'), commentIds: [1], replyIds: [4] };
+  assert.equal(sousHasLastWord([c(1, 'me')], pr, 1), true);
+  assert.equal(sousHasLastWord([c(1, 'me'), c(2, 'dev', { in_reply_to_id: 1 })], pr, 1), false);
+  assert.equal(sousHasLastWord([c(1, 'me'), c(2, 'dev', { in_reply_to_id: 1 }), c(4, 'me', { in_reply_to_id: 1 })], pr, 1), true);
+  assert.equal(sousHasLastWord([c(1, 'me'), c(4, 'me', { in_reply_to_id: 1 }), c(5, 'dev', { in_reply_to_id: 1 }), c(9, 'dev')], pr, 1), false);
+});
+
+test('review threads are read across every page', async () => {
+  const { reviewThreads } = await import('../src/threads.ts');
+  const page = (ids: number[], next: string | null) => JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { pageInfo: { hasNextPage: next !== null, endCursor: next }, nodes: ids.map((id) => ({ id: `T${id}`, isResolved: id === 2, comments: { nodes: [{ databaseId: id }] } })) } } } } });
+  const calls: string[][] = [];
+  const gh = async (args: string[]) => (calls.push(args), args.includes('after=c1') ? page([2], null) : page([1], 'c1'));
+  assert.deepEqual(await reviewThreads(gh, 'o/r', 3), [{ id: 'T1', isResolved: false, firstCommentId: 1 }, { id: 'T2', isResolved: true, firstCommentId: 2 }]);
+  assert.equal(calls.length, 2);
+});
