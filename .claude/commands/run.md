@@ -13,9 +13,9 @@ description: The scheduled run. Reviews what is due in one org (or every org), t
 3. Run `./bin/sous tokens --org <org> --label run --session ${CLAUDE_SESSION_ID}` for each org that had a review, so the run's tokens and time are in the event log before the learning round reads them.
 4. Run `/learn-round <org> <run start time>` for every org this run touched: a review, a reply, a skip, a refusal or a block. Run its subagents in the foreground and wait for each.
 5. Run `./bin/sous unlock <org> ${CLAUDE_SESSION_ID}` for every org this run locked, even when a step failed. This is the run's last command.
-6. If `questions.md` or `engine-fixes.md` in any org gained entries, finish with one line: "Sous: <n> reviews posted, <m> questions and <k> engine fixes waiting. Run /learn to go through them one at a time." Don't list the questions themselves: `/learn` gives each one its background before asking.
+6. Finish with the summary, and nothing after it: for each org this run touched, run `./bin/sous summary <org> <run start time>` and print its table as it comes, under the org's name. It lists each PR with its link and the comments, replies and resolved threads Sous posted on it. Below the tables, one line: "<n> reviews posted, <m> questions and <k> engine fixes waiting for /learn." Name a blocked or locked org, or a step that failed, in one more line.
 
-Never stop to ask anything during a run. Doubts go to `questions.md` in the form `prompts/question-format.md` sets.
+A run is non-interactive: nobody is watching it. Never stop to ask anything, and never call AskUserQuestion, PushNotification, ScheduleWakeup or Monitor. Doubts go to `questions.md` in the form `prompts/question-format.md` sets. If the app gives you a wrap-up tool, pass it the recap alone, with no question and no buttons. While subagents run, write no progress lines such as "waiting on the gatherers": nobody reads them.
 
 Run every subagent as an Agent call with its `subagent_type`, never through a Workflow. Never end the turn while a subagent you started is still running: a scheduled run ends with the turn, so anything still running is cut off and the lock stays held.
 
