@@ -7,7 +7,7 @@ const flaky = (fails: number, message = 'dial tcp 1.2.3.4:443: i/o timeout'): Gh
     gh.calls++;
     if (gh.calls <= fails) throw new Error(message);
     return 'ok';
-  }) as Gh & { calls: number };
+  }) as unknown as Gh & { calls: number };
   gh.calls = 0;
   return gh;
 };
