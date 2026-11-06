@@ -179,3 +179,19 @@ test('only the main session can mark a PR as asked for by hand', () => {
   for (const agent of ['gatherer', 'lens', 'verifier', 'writer', 'reply-judge', 'reflector', 'signal-collector']) assert.ok(!ok('./bin/sous ask acme acme/r 1', roleOf(agent)), agent);
   assert.ok(checkCommand('./bin/sous ask acme acme/r 1', 'main', '/tmp').ok);
 });
+
+test('git grep may count and print only matches; git -c before the subcommand is still refused', () => {
+  for (const cmd of ['/usr/bin/git -C /tmp grep -c -F x -- a', '/usr/bin/git -C /tmp grep -n -o -E "on[a-z]+=" -- a']) assert.ok(checkCommand(cmd, 'reader', '/tmp').ok, cmd);
+  for (const cmd of ['git -c core.pager=sh grep x', 'git -C /tmp grep -Ovim x', 'git -C /tmp diff --output=/tmp/x', 'git -C /tmp log --ext-diff']) assert.ok(!checkCommand(cmd, 'reader', '/tmp').ok, cmd);
+});
+
+test('grep and find run by their system path; the same name elsewhere is refused', () => {
+  for (const cmd of ['/usr/bin/grep -rn foo /tmp', '/usr/bin/find /tmp -name x.ts', '/bin/ls /tmp']) assert.ok(checkCommand(cmd, 'reader', '/tmp').ok, cmd);
+  for (const cmd of ['/tmp/pr/grep -rn foo /tmp', './grep foo x', '/usr/bin/find /tmp -exec rm {} ;']) assert.ok(!checkCommand(cmd, 'reader', '/tmp').ok, cmd);
+});
+
+test('a path that only names bin/sous is not a call to it', () => {
+  assert.ok(checkCommand('ls bin/sous', 'main', '/tmp').ok);
+  assert.ok(checkCommand('pwd; test -f bin/sous', 'main', '/tmp').ok);
+  assert.ok(!checkCommand('cd x && /opt/sous/bin/sous due', 'main', '/tmp').ok);
+});
