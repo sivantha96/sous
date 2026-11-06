@@ -25,8 +25,14 @@ interface RunUsage {
   seconds?: Record<string, number>;
 }
 
-export function retro(events: LoggedEvent[], since: string, history = 10) {
-  const run = events.filter((e) => e.at >= since);
+/**
+ * `scope` narrows the run to one session when several run at once (hand reviews in parallel):
+ * only its usage counts as its cost, and only its PRs' reviews, problems and scores are its own.
+ */
+export function retro(events: LoggedEvent[], since: string, history = 10, scope: { session?: string; prs?: string[] } = {}) {
+  const ours = (e: LoggedEvent) =>
+    e.type === 'usage' ? !scope.session || e.session === scope.session : !scope.prs?.length || typeof e.pr !== 'string' || scope.prs.includes(e.pr);
+  const run = events.filter((e) => e.at >= since && ours(e));
   // A hand review (`/review`) logs `review`; both are runs here, so its cost is reviewed too.
   const isRunUsage = (e: LoggedEvent) => e.type === 'usage' && (e.label === 'run' || e.label === 'review');
   const usage = run.filter(isRunUsage) as (LoggedEvent & RunUsage)[];
@@ -126,6 +132,12 @@ export function cycleTimes(events: LoggedEvent[], prs: Record<string, { createdA
     if (p.mergedAt) toMerge.push(hours(at, p.mergedAt));
   }
   return { prs: toReview.length, merged: toMerge.length, medianHoursToFirstReview: median(toReview), medianHoursFromReviewToMerge: median(toMerge) };
+}
+
+/** Drops reviews already scored since the PR's last posted review, so parallel sessions never log one twice. */
+export function unscored(events: LoggedEvent[], reviews: ScoredReview[]): ScoredReview[] {
+  const lastAt = (type: string, pr: string) => events.filter((e) => e.type === type && e.pr === pr).reduce((t, e) => (e.at > t ? e.at : t), '');
+  return reviews.filter((r) => !(lastAt('scored', r.pr) && lastAt('scored', r.pr) >= lastAt('reviewed', r.pr)));
 }
 
 /** The average of each quality score the review-judge gave, over the scored events given. */

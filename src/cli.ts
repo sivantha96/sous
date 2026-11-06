@@ -19,7 +19,7 @@ import { assertOwnThread, reviewThreads, sousHasLastWord, threadIdFor, type PrCo
 import { lintText } from './voice-lint.ts';
 import { codeLinks, plan } from './plan.ts';
 import { mergeUsage, spanSeconds, subagentLogs, usageByModel, type Usage } from './usage.ts';
-import { checkScores, cycleTimes, qualityAverages, retro, runSummary } from './retro.ts';
+import { checkScores, cycleTimes, qualityAverages, retro, runSummary, unscored } from './retro.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -937,9 +937,10 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** The last run for the learning round: its problems, its cost and time, and the recent median. */
   async retro(args) {
-    const [org, since] = args;
-    if (!org || !since || Number.isNaN(Date.parse(since))) throw new Error('usage: sous retro <org> <run start ISO time>');
-    print(retro(readEvents(org), since));
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { session: { type: 'string' }, pr: { type: 'string', multiple: true } } });
+    const [org, since] = positionals;
+    if (!org || !since || Number.isNaN(Date.parse(since))) throw new Error('usage: sous retro <org> <run start ISO time> [--session <id>] [--pr owner/repo#n ...]');
+    print(retro(readEvents(org), since, 10, { session: values.session, prs: values.pr }));
     return 0;
   },
 
@@ -955,9 +956,10 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   async quality(args) {
     const [org, file] = args;
     if (!org || !file) throw new Error('usage: sous quality <org> <scores.json>');
-    const reviews = checkScores(JSON.parse(readFileSync(file, 'utf8')));
+    const all = checkScores(JSON.parse(readFileSync(file, 'utf8')));
+    const reviews = unscored(readEvents(org), all);
     for (const r of reviews) logEvent(org, 'scored', { pr: r.pr, scores: r.scores, low: r.low });
-    print({ scored: reviews.length, low: reviews.filter((r) => r.low.length).map((r) => r.pr) });
+    print({ scored: reviews.length, alreadyScored: all.length - reviews.length, low: reviews.filter((r) => r.low.length).map((r) => r.pr) });
     return 0;
   },
 

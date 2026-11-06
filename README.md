@@ -58,7 +58,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `sous score` | Scores eval runs: every listed case counts (a missing draft scores zero), repeats are averaged, and each case shows points lenses came near against points kept; `--gate` fails on a drop, `--accept` sets the baseline |
 | `sous bench import` | Turns a benchmark file you supply into cases in a separate `bench` org |
 | `sous tokens` | Token use and running time per subagent and model for a session, from Claude Code transcripts; `--org` logs it |
-| `sous retro` | The last run for the learning round: its reviews, problems (refusals, skips, blocks, deferrals), paid tokens and minutes, next to the median of the 10 runs before it. No model tokens |
+| `sous retro` | The last run for the learning round: its reviews, problems (refusals, skips, blocks, deferrals), low review scores, paid tokens and minutes, next to the median of the 10 runs before it. `--session` and `--pr` keep it to one session when several run at once. No model tokens |
 | `sous summary` | The run's last message: one row per PR it touched, linked, with the comments, replies and resolved threads Sous posted. No model tokens |
 | `sous pr-lock` / `pr-unlock` | One Sous review of a PR at a time: a run skips a PR a hand `/review` holds, and the other way round. Expires after 90 minutes |
 | `sous quality` | Logs the review-judge's scores after checking each one is there and from 1 to 5. No model tokens |

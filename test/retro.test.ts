@@ -76,3 +76,26 @@ test('cycle time runs from opening to the first Sous review, and from that revie
   const prs = { 'o/r#2': { createdAt: '2026-11-05T00:00:00Z', mergedAt: '2026-11-05T12:00:00Z' }, 'o/r#3': { createdAt: '2026-11-05T00:00:00Z', mergedAt: null } };
   assert.deepEqual(cycleTimes(events, prs), { prs: 2, merged: 1, medianHoursToFirstReview: 3, medianHoursFromReviewToMerge: 10 });
 });
+
+test('a scoped retro counts only its own session cost and its own PRs', () => {
+  const events: LoggedEvent[] = [
+    { at: '2026-11-05T00:00:01Z', type: 'reviewed', pr: 'o/r#1', event: 'COMMENT', findings: [{}] },
+    { at: '2026-11-05T00:00:02Z', type: 'reviewed', pr: 'o/r#2', event: 'COMMENT', findings: [{}] },
+    { at: '2026-11-05T00:00:03Z', type: 'lint-refused', pr: 'o/r#2' },
+    { ...usage('2026-11-05T00:01:00Z', 100, 60, 'review'), session: 'a' },
+    { ...usage('2026-11-05T00:01:01Z', 900, 60, 'review'), session: 'b' },
+  ];
+  const r = retro(events, '2026-11-05T00:00:00Z', 10, { session: 'a', prs: ['o/r#1'] });
+  assert.deepEqual(r.reviews.map((x) => x.pr), ['o/r#1']);
+  assert.equal(r.problems.length, 0);
+  assert.equal(r.cost?.paidTokens, 100);
+});
+
+test('a review already scored since its last post is not scored again', async () => {
+  const { unscored } = await import('../src/retro.ts');
+  const s = { pr: 'o/r#1', scores: good, low: [] };
+  const posted: LoggedEvent = { at: '2026-11-05T00:00:01Z', type: 'reviewed', pr: 'o/r#1' };
+  assert.equal(unscored([posted], [s]).length, 1);
+  assert.equal(unscored([posted, { at: '2026-11-05T00:00:02Z', type: 'scored', pr: 'o/r#1' }], [s]).length, 0);
+  assert.equal(unscored([posted, { at: '2026-11-05T00:00:02Z', type: 'scored', pr: 'o/r#1' }, { at: '2026-11-05T00:00:03Z', type: 'reviewed', pr: 'o/r#1' }], [s]).length, 1, 'a new review is scored');
+});
