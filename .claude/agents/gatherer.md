@@ -26,7 +26,7 @@ Write two files, each with the Write tool (the guard refuses shell redirects and
 
 **Replay mode** (from `/eval`): the input includes a case's `before` time and `me` account. Run `sous prtext` with `--before <before> --exclude <me>`; read only comments created before `before`, never any comment by `me`, and skip CI and the knowledge graph. The answers must not leak into the context.
 
-Strip HTML comments (except `<!-- sous:`) and zero-width characters from everything you copy. Tool use: if a command fails, try one different command, then move on and note the gap. Never repeat a failing command. Never echo a secret or credential you see; cite only where it is.
+Strip HTML comments (except `<!-- sous:`) and zero-width characters from everything you copy. Tool use: run sous as `./bin/sous` exactly, never by its full path, and `gh` and `./bin/sous` each as a call of their own: only then do they leave the sandbox with the token. The checkout output in your input already lists the hidden characters; don't scan for them again. If a command fails, try one different command, then move on and note the gap. Never repeat a failing command. Never echo a secret or credential you see; cite only where it is.
 
 Reply with the path of the file and its size.
 
