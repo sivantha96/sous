@@ -25,7 +25,7 @@ import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { diffTerms, factState, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
-import { askByHand, askedByHand, askedYou, emptyPr, loadState, logEvent, prKey, readEvents, releaseLock, saveState, takeLock, type LoggedEvent } from './state.ts';
+import { askByHand, askedByHand, askedYou, emptyPr, loadState, logEvent, prKey, readEvents, releaseLock, releasePrLock, saveState, takeLock, takePrLock, type LoggedEvent } from './state.ts';
 
 const run = promisify(execFile);
 
@@ -210,6 +210,25 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   },
 
   /** Releases the run lock `sous due --lock` took, when this session holds it. */
+  /** Claims one PR for this session's review; exits 3 when another session is reviewing it. */
+  async 'pr-lock'(args) {
+    const [org, repo, n, session] = args;
+    if (!org || !repo || !n || !session) throw new Error('usage: sous pr-lock <org> <owner/repo> <number> <session id>');
+    const key = prKey(repo, Number(n));
+    const lock = takePrLock(org, key, session);
+    print({ pr: key, ...lock });
+    return lock.ok ? 0 : 3;
+  },
+
+  /** Frees a PR this session claimed. */
+  async 'pr-unlock'(args) {
+    const [org, repo, n, session] = args;
+    if (!org || !repo || !n || !session) throw new Error('usage: sous pr-unlock <org> <owner/repo> <number> <session id>');
+    const key = prKey(repo, Number(n));
+    print({ pr: key, released: releasePrLock(org, key, session) });
+    return 0;
+  },
+
   async unlock(args) {
     const [org, session] = args;
     if (!org || !session) throw new Error('usage: sous unlock <org> <session>');
@@ -250,6 +269,11 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       mkdirSync(join(clone, '..'), { recursive: true });
       await run('gh', ['repo', 'clone', repo, clone, '--', '--filter=blob:none', '--no-checkout', '-q'], { env });
     }
+    // Fetches, and the blobs a partial clone downloads on demand, ask git's credential helper. The global
+    // one is often the macOS keychain, which opens a password window per fetch; this clone uses gh's token.
+    await run('git', ['config', '--local', '--unset-all', 'credential.helper'], { cwd: clone }).catch(() => undefined);
+    await run('git', ['config', '--local', '--add', 'credential.helper', ''], { cwd: clone });
+    await run('git', ['config', '--local', '--add', 'credential.helper', '!gh auth git-credential'], { cwd: clone });
     await run('git', ['fetch', '-q', 'origin', `pull/${n}/head`, `+refs/heads/${base}:refs/remotes/origin/${base}`], { cwd: clone, env });
     const tree = join(clone, '.worktrees', `${n}-${head.slice(0, 12)}`);
     // A checkout made before AI-config folders were excluded is rebuilt.

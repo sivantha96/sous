@@ -4,7 +4,7 @@ description: The scheduled run. Reviews what is due in one org (or every org), t
 
 0. Note the run's start time as an ISO timestamp: run `date -u +%Y-%m-%dT%H:%M:%SZ` as a call of its own, never chained with step 1. The gate and the learning round use it.
 1. Run `./bin/sous due --lock ${CLAUDE_SESSION_ID}`, adding `--org $ARGUMENTS` when an org was given. It prints `take` (this run's PRs, already capped) and each org's queue. An org listed as `locked` is still being worked on by an earlier run: leave it alone. When every org is locked, stop with that one line.
-2. For each PR in `take`, in order:
+2. For each PR in `take`, in order. First claim it with `./bin/sous pr-lock <org> <repo> <n> ${CLAUDE_SESSION_ID}`; on exit 3 another session (a hand `/review`) is on it, so skip it this run. Release it with `./bin/sous pr-unlock <org> <repo> <n> ${CLAUDE_SESSION_ID}` when you are done with it, even when a step failed.
    - If it has `threads`, whatever its reason, run the `reply-judge` subagent with them first: the author may say what they changed, point to another PR, or dispute a finding. It replies, resolves or asks in those threads.
    - If its reason is `REPLY`, that is all: move on.
    - If its reason is `REREQUESTED`, the author asked for your review again with no new push: follow `/review` on the same head. `sous post` drops points already made, and records the head when nothing new is left.

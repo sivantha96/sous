@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendLine, orgDir, readJson, writeJson } from './home.ts';
 
@@ -140,6 +140,37 @@ export function releaseLock(org: string, session: string): boolean {
   const held = readJson<{ session?: string } | null>(lockPath(org), null);
   if (held?.session !== session) return false;
   rmSync(lockPath(org));
+  return true;
+}
+
+const prLockPath = (org: string, key: string): string => join(orgDir(org), 'locks', `${key.replace(/[^\w.-]+/g, '-')}.lock`);
+
+/**
+ * One Sous review of a PR at a time. Two sessions on one PR post the same points twice and race on
+ * its threads. Taken with an exclusive create, so two sessions can't both win; a lock older than
+ * LOCK_MINUTES belongs to a session that died and is taken over.
+ */
+export function takePrLock(org: string, key: string, session: string, now = new Date()): { ok: true } | { ok: false; heldBy: string; since: string } {
+  const path = prLockPath(org, key);
+  mkdirSync(join(orgDir(org), 'locks'), { recursive: true });
+  const mine = JSON.stringify({ session, at: now.toISOString() });
+  try {
+    writeFileSync(path, mine, { flag: 'wx' });
+    return { ok: true };
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+  }
+  const held = readJson<{ session?: string; at?: string } | null>(path, null);
+  if (held?.session && held.session !== session && held.at && now.getTime() - Date.parse(held.at) < LOCK_MINUTES * 60_000) return { ok: false, heldBy: held.session, since: held.at };
+  writeJson(path, { session, at: now.toISOString() });
+  return { ok: true };
+}
+
+export function releasePrLock(org: string, key: string, session: string): boolean {
+  const path = prLockPath(org, key);
+  const held = readJson<{ session?: string } | null>(path, null);
+  if (held?.session !== session) return false;
+  rmSync(path, { force: true });
   return true;
 }
 
