@@ -16,9 +16,10 @@ test('classify: new, pushed, or already reviewed at this head', () => {
   assert.equal(classify(state, 'o/r', 1, 'aaa'), null);
 });
 
-test('replies first, then pushes, then new PRs', () => {
-  const item = (reason: DueItem['reason'], number: number) => ({ reason, number }) as DueItem;
+test('replies first, then pushes, then new PRs; a push that answers Sous counts as a reply', () => {
+  const item = (reason: DueItem['reason'], number: number, threads: unknown[] = []) => ({ reason, number, threads }) as DueItem;
   assert.deepEqual([item('NEW', 1), item('PUSHED', 2), item('REPLY', 3)].sort(byPriority).map((i) => i.number), [3, 2, 1]);
+  assert.deepEqual([item('PUSHED', 1), item('NEW', 2), item('PUSHED', 3, [{}])].sort(byPriority).map((i) => i.number), [3, 1, 2]);
 });
 
 test('a head you reviewed yourself is not due; Sous reviews do not count as yours', async () => {

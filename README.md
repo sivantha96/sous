@@ -73,7 +73,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `writer` | Opus | Writes the review in your voice and runs `sous post` |
 | `signal-collector` | Haiku | What changed since the last learning round |
 | `match-judge` | Haiku | In `/eval`, pairs your points with Sous findings that make the same point anywhere |
-| `reply-judge` | Sonnet, Opus for hard cases | Weighs teammates' replies and reactions: adopts, withdraws, answers once, or asks you |
+| `reply-judge` | Sonnet, Opus for hard cases | Weighs teammates' replies and reactions, on a push too: checks a claimed fix and confirms it with a reply before resolving, follows up once on what still fails, withdraws, or asks you |
 | `reflector` | Opus | Reviews the run (problems, tokens and time against recent runs) and the signals: memory edits behind the replay gate, engine fixes for `/learn` to turn into PRs on your yes, questions for you. Skipped when a run had no signals, no problems and a normal cost |
 
 ## Rules this code enforces

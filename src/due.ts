@@ -90,8 +90,9 @@ export async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) =>
 }
 
 const RANK: Record<Reason, number> = { REPLY: 0, REREQUESTED: 1, PUSHED: 1, NEW: 2 };
-/** Replies first, then pushes, then new PRs: a waiting author is blocked on you. */
-export const byPriority = (a: DueItem, b: DueItem): number => RANK[a.reason] - RANK[b.reason];
+/** Replies first (a push that answers Sous's threads too), then pushes, then new PRs: a waiting author is blocked on you. */
+const rank = (d: DueItem): number => (d.threads?.length ? 0 : RANK[d.reason]);
+export const byPriority = (a: DueItem, b: DueItem): number => rank(a) - rank(b);
 
 interface SearchItem {
   number: number;

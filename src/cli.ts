@@ -15,7 +15,7 @@ import { buildDenylist, findLeaks } from './leak.ts';
 import { applyCorrections, isDuplicate, missingDecisions, verifyEvidence, type Correction } from './evidence.ts';
 import { buildReview, dismissOwn, hasMarker, LintError, marker, postReview, signed, type Draft } from './post.ts';
 import { commitAt, gateFails, lensRecall, meanTotals, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
-import { assertOwnThread, threadIdFor, type PrComment } from './threads.ts';
+import { assertOwnThread, reviewThreads, sousHasLastWord, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
 import { codeLinks, plan } from './plan.ts';
 import { mergeUsage, spanSeconds, subagentLogs, usageByModel, type Usage } from './usage.ts';
@@ -560,13 +560,14 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const gh = await ghFor(profile.ghAccount);
     const reviews = await getAll<{ id: number; state: string; commit_id: string }>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`);
     const comments = await getAll<PrComment & { original_commit_id: string }>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`);
+    const resolved = new Set((await reviewThreads(gh, repo, Number(n))).filter((t) => t.isResolved).map((t) => t.firstCommentId));
     print({
       head: pr.head,
       reviews: reviews.filter((r) => pr.reviewIds.includes(r.id)).map((r) => ({ id: r.id, state: r.state, commit: r.commit_id })),
       blocking: reviews.filter((r) => pr.reviewIds.includes(r.id) && r.state === 'CHANGES_REQUESTED').map((r) => r.id),
       findings: comments
         .filter((c) => pr.commentIds.includes(c.id))
-        .map((c) => ({ id: c.id, path: c.path, line: c.line, outdated: c.line === null, body: c.body.split('\n\n')[0], sous: hasMarker(c.body) })),
+        .map((c) => ({ id: c.id, path: c.path, line: c.line, outdated: c.line === null, resolved: resolved.has(c.id), sousHasLastWord: sousHasLastWord(comments, pr, c.id), body: c.body.split('\n\n')[0], sous: hasMarker(c.body) })),
     });
     return 0;
   },

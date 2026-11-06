@@ -56,6 +56,29 @@ interface ThreadPage {
   };
 }
 
+export interface ReviewThread {
+  id: string;
+  isResolved: boolean;
+  /** The id of the comment that starts the thread. */
+  firstCommentId: number | undefined;
+}
+
+/** Every review thread on a PR, following GraphQL pages. */
+export async function reviewThreads(gh: (args: string[]) => Promise<string>, repo: string, n: number): Promise<ReviewThread[]> {
+  const [owner, name] = repo.split('/');
+  const query = `query($owner:String!,$name:String!,$n:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}`;
+  const out: ReviewThread[] = [];
+  let after: string | null = null;
+  for (;;) {
+    const args = ['api', 'graphql', '-f', `query=${query}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `n=${n}`];
+    if (after) args.push('-F', `after=${after}`);
+    const threads = (JSON.parse(await gh(args)) as ThreadPage).data.repository.pullRequest.reviewThreads;
+    out.push(...threads.nodes.map((t) => ({ id: t.id, isResolved: t.isResolved, firstCommentId: t.comments.nodes[0]?.databaseId })));
+    if (!threads.pageInfo.hasNextPage) return out;
+    after = threads.pageInfo.endCursor;
+  }
+}
+
 /** Finds the GraphQL id of the review thread whose first comment is `commentId`. */
 export async function threadIdFor(
   gh: (args: string[]) => Promise<string>,
@@ -63,17 +86,12 @@ export async function threadIdFor(
   n: number,
   commentId: number,
 ): Promise<{ id: string; isResolved: boolean } | null> {
-  const [owner, name] = repo.split('/');
-  const query = `query($owner:String!,$name:String!,$n:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}`;
-  let after: string | null = null;
-  for (;;) {
-    const args = ['api', 'graphql', '-f', `query=${query}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `n=${n}`];
-    if (after) args.push('-F', `after=${after}`);
-    const page = JSON.parse(await gh(args)) as ThreadPage;
-    const threads = page.data.repository.pullRequest.reviewThreads;
-    const hit = threads.nodes.find((t) => t.comments.nodes[0]?.databaseId === commentId);
-    if (hit) return { id: hit.id, isResolved: hit.isResolved };
-    if (!threads.pageInfo.hasNextPage) return null;
-    after = threads.pageInfo.endCursor;
-  }
+  const hit = (await reviewThreads(gh, repo, n)).find((t) => t.firstCommentId === commentId);
+  return hit ? { id: hit.id, isResolved: hit.isResolved } : null;
+}
+
+/** Whether Sous wrote the last comment in the thread its comment starts: a follow-up is said once, then it waits. */
+export function sousHasLastWord(comments: PrComment[], pr: PrState, commentId: number): boolean {
+  const last = comments.filter((c) => c.id === commentId || c.in_reply_to_id === commentId).reduce((a, c) => (c.id > a.id ? c : a));
+  return pr.commentIds.includes(last.id) || pr.replyIds.includes(last.id);
 }
