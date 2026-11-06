@@ -105,12 +105,15 @@ export function applyCorrections(findings: Finding[], corrections: Correction[])
   const out = findings.map((f) => ({ ...f, evidence: [...(f.evidence ?? [])], counterEvidence: [...(f.counterEvidence ?? [])] }));
   for (const c of corrections) {
     const f = out[c.index];
-    if (!f || !['line', 'side', 'path', 'quote'].includes(c.field)) continue;
+    // A correction that matches nothing would be dropped silently and use up the one repair.
+    if (!f) throw new Error(`correction for finding #${c.index}: no such finding`);
+    if (!['line', 'side', 'path', 'quote'].includes(c.field)) continue;
     const value = c.field === 'line' ? Number(c.value) : c.field === 'side' ? (c.value === 'LEFT' ? 'LEFT' : 'RIGHT') : String(c.value);
     if (c.target === 'anchor') Object.assign(f, { [c.field]: value });
     else {
-      const q = f[c.target][c.item ?? -1];
-      if (q) Object.assign(q, { [c.field]: value });
+      const q = f[c.target]?.[c.item ?? -1];
+      if (!q) throw new Error(`correction for finding #${c.index}: no ${c.target} item ${c.item ?? '(none given)'}; a repair fixes an existing quote and can't add one`);
+      Object.assign(q, { [c.field]: value });
     }
   }
   return out;

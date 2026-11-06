@@ -38,7 +38,10 @@ export function retro(events: LoggedEvent[], since: string, history = 10) {
   }
   return {
     since,
-    reviews: run.filter((e) => e.type === 'reviewed').map((e) => ({ pr: e.pr, event: e.event, findings: Array.isArray(e.findings) ? e.findings.length : 0 })),
+    // An adopted review is one whose post response was lost: it is on the PR all the same.
+    reviews: run
+      .filter((e) => e.type === 'reviewed' || e.type === 'adopted')
+      .map((e) => (e.type === 'adopted' ? { pr: e.pr, event: 'ADOPTED', findings: typeof e.comments === 'number' ? e.comments : 0 } : { pr: e.pr, event: e.event, findings: Array.isArray(e.findings) ? e.findings.length : 0 })),
     problems: run.filter((e) => PROBLEMS.has(e.type)),
     cost: usage.length
       ? { paidTokens: usage.reduce((s, u) => s + paid(u.totals), 0), cacheReadTokens: usage.reduce((s, u) => s + cacheRead(u.totals), 0), seconds: usage.reduce((s, u) => s + (u.seconds?.main ?? 0), 0), byAgent }

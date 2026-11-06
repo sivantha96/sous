@@ -10,13 +10,33 @@ export type Gh = (args: string[], stdin?: string) => Promise<string>;
 export async function ghFor(account: string): Promise<Gh> {
   const { stdout } = await run('gh', ['auth', 'token', '--user', account]);
   const env = { ...process.env, GH_TOKEN: stdout.trim() };
-  return (args, stdin) =>
+  return withRetry((args, stdin) =>
     new Promise((resolve, reject) => {
       const child = execFile('gh', args, { env, maxBuffer: 64 * 1024 * 1024 }, (err, out, errOut) =>
         err ? reject(new Error(`gh ${args.slice(0, 3).join(' ')}: ${errOut || err.message}`)) : resolve(out),
       );
       if (stdin !== undefined) child.stdin?.end(stdin);
-    });
+    }));
+}
+
+const NETWORK = /i\/o timeout|connection reset|TLS handshake timeout|no such host|connection refused/i;
+
+/**
+ * Retries a read that failed on the network, twice, after a pause: a scheduled run can start before
+ * the network is back. Writes (a stdin body, `-X`, a mutation) are never retried; `sous post` adopts a lost post.
+ */
+export function withRetry(gh: Gh, waits = [5000, 20000]): Gh {
+  return async (args, stdin) => {
+    for (let i = 0; ; i++) {
+      try {
+        return await gh(args, stdin);
+      } catch (e) {
+        const write = stdin !== undefined || args.includes('-X') || args.some((a) => a.startsWith('query=mutation'));
+        if (i >= waits.length || write || !NETWORK.test((e as Error).message)) throw e;
+        await new Promise((r) => setTimeout(r, waits[i]));
+      }
+    }
+  };
 }
 
 /** GET a REST path, following every page (GitHub caps pages at 100 items). */
