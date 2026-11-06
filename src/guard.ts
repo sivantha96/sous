@@ -105,9 +105,8 @@ function checkGit(argv: string[], role: Role): Verdict {
   const flags = argv.slice(1);
   if (flags.some((a) => GIT_UNSAFE.test(a))) return no('git options that run programs or write files are not allowed');
   if (sub && GIT_READ.has(sub)) return { ok: true };
-  if (role === 'reflector' && sub && ['switch', 'add', 'commit', 'push', 'revert', 'fetch', 'checkout', 'restore', 'branch', 'stash'].includes(sub)) {
-    return flags.some((a) => /^(--force|-f|--force-with-lease)/.test(a)) ? no('force pushes and forced switches are not allowed') : { ok: true };
-  }
+  // The reflector commits memory folders; engine fixes go to /learn, so it never pushes or branches.
+  if (role === 'reflector' && sub && ['add', 'commit', 'revert'].includes(sub)) return { ok: true };
   return no(`git ${sub ?? ''} is not allowed for this agent`);
 }
 
@@ -122,7 +121,6 @@ function checkGh(argv: string[], role: Role): Verdict {
     return { ok: true };
   }
   if (allowed === true || (Array.isArray(allowed) && sub && allowed.includes(sub))) return { ok: true };
-  if (role === 'reflector' && group === 'pr' && sub === 'create') return { ok: true };
   return no(`gh ${group ?? ''} ${sub ?? ''} is not allowed for this agent`);
 }
 
@@ -136,6 +134,7 @@ export function checkCommand(command: string, role: Role, cwd: string): Verdict 
   const parsed = parseCommandLine(command);
   // The sandbox lets a call out only when every command in it is excluded, so a chained gh or sous
   // runs sandboxed and fails to sign in; refusing it says why instead.
+  if (ABSOLUTE_SOUS_RE.test(command)) return no('call sous as ./bin/sous: only that form is excluded from the sandbox, so any other path runs without the GitHub token');
   const stages = parsed.ok ? parsed.parsed.stages : null;
   const holdsToken = (argv: string[]) => argv[0] === 'gh' || argv[0] === 'rtk' && argv[1] === 'gh' || argv[0] === './bin/sous' || argv[0]!.endsWith('/bin/sous');
   if (stages ? stages.length > 1 && stages.some(holdsToken) : CHAINED_TOKEN_RE.test(command.replace(/\d*>&\d/g, ''))) return no('run gh and ./bin/sous as a call of their own, with no pipe or chain: chained, they run in the sandbox without the token');
@@ -160,13 +159,14 @@ export function checkCommand(command: string, role: Role, cwd: string): Verdict 
     if (name === 'git') v = checkGit(argv, role);
     else if (name === 'gh') v = checkGh(argv, role);
     else if (name === 'sous' || argv[0] === './bin/sous' || argv[0]!.endsWith('/bin/sous')) v = checkSous(argv, role);
-    else if (role === 'reflector' && name === 'pnpm' && ['check', 'test', 'typecheck'].includes(argv[1] ?? '')) v = { ok: true };
     else if (role === 'reflector' && name === 'mkdir') v = { ok: true };
     else v = validateStage(argv);
     if (!v.ok) return v;
   }
   return { ok: true };
 }
+
+const ABSOLUTE_SOUS_RE = /(^|[\s;&|(])(?!\.\/bin\/sous(\s|$))\S*bin\/sous(\s|$)/;
 
 const CHAINED_TOKEN_RE = /(^|[\s;&|(])(gh|\.\/bin\/sous)\s[^]*[|;&]|[|;&][^]*(^|[\s;&|(])(gh|\.\/bin\/sous)\s/;
 
@@ -184,7 +184,8 @@ const inside = (path: string, dir: string): boolean => path === dir || path.star
  * Write, Edit and NotebookEdit. Every role: no credentials or env files, nothing inside a `.git`
  * folder (hooks there run outside any check), and none of the engine's guard files; the main
  * session may edit those only when the person started it with SOUS_ENGINE_EDIT=1. Subagents
- * write only under ~/.sous and the temp folder; the reflector also in this repo.
+ * write only under ~/.sous and the temp folder. Not the reflector in this repo either: it is the
+ * lead's own checkout, so a run's half-made engine change would be left on their branch.
  */
 export function checkWrite(path: string | undefined, role: Role, cwd: string, env: NodeJS.ProcessEnv = process.env): Verdict {
   if (!path) return no('no path to write');
@@ -196,13 +197,12 @@ export function checkWrite(path: string | undefined, role: Role, cwd: string, en
     return no(`${relative(ENGINE_ROOT, abs)} is one of Sous's own guard rails; edit it in a session started with SOUS_ENGINE_EDIT=1`);
   }
   if (role === 'main') return { ok: true };
-  const allowed = [realOf(sousHome()), realOf(tmpdir()), ...(role === 'reflector' ? [ENGINE_ROOT] : [])];
-  return allowed.some((d) => inside(abs, d)) ? { ok: true } : no(`subagents write only under ~/.sous and the temp folder${role === 'reflector' ? ' and the Sous repo' : ''}`);
+  return [realOf(sousHome()), realOf(tmpdir())].some((d) => inside(abs, d)) ? { ok: true } : no('subagents write only under ~/.sous (temp files in ~/.sous/tmp)');
 }
 
 export interface HookInput {
   tool_name: string;
-  tool_input: { command?: string; file_path?: string; notebook_path?: string; path?: string; pattern?: string };
+  tool_input: { command?: string; file_path?: string; notebook_path?: string; path?: string; pattern?: string; glob?: string };
   agent_type?: string;
   cwd?: string;
 }
@@ -214,11 +214,19 @@ export interface HookInput {
 const BLIND = new Set(['verifier', 'writer']);
 const PR_TEXT = /\.pr-text\.md\b/;
 
+/** Added to a subagent's refused Bash call, so the next call is one that passes. */
+export const SHELL_HINT = ' (read files with the Read tool and a `limit`, search with Grep or Glob, run git as `/usr/bin/git -C <path> <subcommand>`; one plain command per call)';
+
 export function decide(input: HookInput): Verdict {
   const role = roleOf(input.agent_type);
   const cwd = input.cwd ?? process.cwd();
-  if (input.agent_type && BLIND.has(input.agent_type) && PR_TEXT.test(JSON.stringify(input.tool_input))) return no('the verifier and writer never read the PR text; judge from the code and the findings');
-  if (input.tool_name === 'Bash') return checkCommand(input.tool_input.command ?? '', role, cwd);
+  // Only what is read or run: a file's content may name the PR-text file without reading it.
+  const { command, file_path, path, pattern, glob } = input.tool_input;
+  if (input.agent_type && BLIND.has(input.agent_type) && PR_TEXT.test([command, file_path, path, pattern, glob].join(' '))) return no('the verifier and writer never read the PR text; judge from the code and the findings');
+  if (input.tool_name === 'Bash') {
+    const v = checkCommand(command ?? '', role, cwd);
+    return v.ok || role === 'main' ? v : no(v.reason + SHELL_HINT);
+  }
   if (['Read', 'Grep', 'Glob'].includes(input.tool_name)) return checkPath(input.tool_input.file_path ?? input.tool_input.path, role, cwd);
   if (['Write', 'Edit', 'MultiEdit', 'NotebookEdit'].includes(input.tool_name)) return checkWrite(input.tool_input.file_path ?? input.tool_input.notebook_path, role, cwd);
   return { ok: true };

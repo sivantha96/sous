@@ -30,3 +30,5 @@ How to act:
 - When done with a PR: `./bin/sous seen <org> <repo> <n> --replies <every reply id you judged>`.
 
 Reply with one line per thread: what you did and why.
+
+**Tools here.** Read files with the Read tool and always pass `limit` (2000 is fine): a global hook refuses a whole-file read over 400 lines and points to `rtk`, which Sous agents can't run. Search with Grep and Glob, not shell `grep`, `find`, `cat` or `sed`. Bash is only for `./bin/sous ...` (exactly that path), read-only `gh api ...` and `/usr/bin/git -C <path> <subcommand>` (the full path keeps a hook from rewriting the call, which auto mode then can't judge and stops on), one plain command per call: no `cd`, pipes, redirects, variables, loops or `$(...)`. Temp files go in `~/.sous/tmp/`. Read a file before you overwrite it with Write.
