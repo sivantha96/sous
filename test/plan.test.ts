@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { codeLinks, plan } from '../src/plan.ts';
+import { codeLinks, hasTestingNotes, plan } from '../src/plan.ts';
 
 const f = (filename: string, additions = 10, deletions = 0) => ({ filename, additions, deletions });
 
@@ -33,4 +33,20 @@ test('code links are found with their lines', () => {
 test('code comes before its tests in review order', () => {
   const p = plan([f('infra/packages/components/src/components.test.ts', 10), f('infra/packages/registry/src/hostnames.ts', 37)], { stacked: false, orgRules: false });
   assert.equal(p.order[0], 'infra/packages/registry/src/hostnames.ts');
+});
+
+test('past the core tier the breaker lens runs; testing notes are needed only when code changes', () => {
+  const big = plan([f('services/api/src/payments/charge.ts', 300)], { stacked: false, orgRules: false, body: 'Adds refunds.' });
+  assert.ok(big.lenses.includes('breaker'));
+  assert.equal(big.testingNotes, false);
+  assert.ok(big.drivers.includes('no testing notes in the PR description'));
+  const small = plan([f('src/utils/format.ts', 5), f('src/utils/format.test.ts', 5)], { stacked: false, orgRules: false });
+  assert.ok(!small.lenses.includes('breaker'));
+  assert.equal(plan([f('docs/setup.md', 50)], { stacked: false, orgRules: false }).testingNotes, true);
+});
+
+test('testing notes are a testing heading, a checked test box, a command block or a screenshot', () => {
+  for (const body of ['## Testing\nran it', '### How was this tested?', '- [x] Tested on staging', '```\npnpm test\n```', '![after](https://x/a.png)', '<img src="a">'])
+    assert.ok(hasTestingNotes(body), body);
+  for (const body of ['', 'Adds refunds.', '- [ ] Tested', 'see the attestation flow']) assert.ok(!hasTestingNotes(body), body);
 });

@@ -19,13 +19,13 @@ import { assertOwnThread, reviewThreads, sousHasLastWord, threadIdFor, type PrCo
 import { lintText } from './voice-lint.ts';
 import { codeLinks, plan } from './plan.ts';
 import { mergeUsage, spanSeconds, subagentLogs, usageByModel, type Usage } from './usage.ts';
-import { retro, runSummary } from './retro.ts';
+import { checkScores, cycleTimes, qualityAverages, retro, runSummary } from './retro.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { diffTerms, factState, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
-import { askByHand, askedByHand, askedYou, emptyPr, loadState, logEvent, prKey, readEvents, releaseLock, saveState, takeLock } from './state.ts';
+import { askByHand, askedByHand, askedYou, emptyPr, loadState, logEvent, prKey, readEvents, releaseLock, saveState, takeLock, type LoggedEvent } from './state.ts';
 
 const run = promisify(execFile);
 
@@ -886,6 +886,14 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const severities: Record<string, number> = {};
     for (const e of events.filter((e) => e.type === 'reviewed')) for (const f of e.findings ?? []) severities[f.severity] = (severities[f.severity] ?? 0) + 1;
     const tokens = events.filter((e) => e.type === 'usage').reduce((t, e) => mergeUsage(t, e.totals ?? {}), {} as Record<string, Usage>);
+    // One read per PR Sous reviewed in the window, for when it opened and merged.
+    const gh = await ghFor(loadProfile(org).ghAccount);
+    const prTimes: Record<string, { createdAt: string; mergedAt: string | null }> = {};
+    for (const pr of new Set(events.filter((e) => e.type === 'reviewed').map((e) => (e as { pr?: string }).pr).filter((p): p is string => !!p))) {
+      const [repo, n] = pr.split('#');
+      const p = await get<{ created_at: string; merged_at: string | null }>(gh, `repos/${repo}/pulls/${n}`).catch(() => null);
+      if (p) prTimes[pr] = { createdAt: p.created_at, mergedAt: p.merged_at };
+    }
     print({
       since,
       reviews: { posted: count((e) => e.type === 'reviewed' && e.event !== 'NONE'), nothingToPost: count((e) => e.type === 'reviewed' && e.event === 'NONE'), requestChanges: count((e) => e.event === 'REQUEST_CHANGES') },
@@ -896,6 +904,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       replies: count((e) => e.type === 'replied'),
       resolved: count((e) => e.type === 'resolved'),
       dismissed: count((e) => e.type === 'dismissed'),
+      quality: qualityAverages(events as LoggedEvent[]),
+      cycle: cycleTimes(events as LoggedEvent[], prTimes),
       tokens,
     });
     return 0;
@@ -917,16 +927,26 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     return 0;
   },
 
+  /** Logs the review-judge's scores for this run's reviews, after checking every score is there and in range. */
+  async quality(args) {
+    const [org, file] = args;
+    if (!org || !file) throw new Error('usage: sous quality <org> <scores.json>');
+    const reviews = checkScores(JSON.parse(readFileSync(file, 'utf8')));
+    for (const r of reviews) logEvent(org, 'scored', { pr: r.pr, scores: r.scores, low: r.low });
+    print({ scored: reviews.length, low: reviews.filter((r) => r.low.length).map((r) => r.pr) });
+    return 0;
+  },
+
   /** How deep to review: lenses, the missed pass and risk drivers, from the changed paths alone. */
   async plan(args) {
     const [org, repo, n] = args;
     if (!org || !repo || !n) throw new Error('usage: sous plan <org> <owner/repo> <number>');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
-    const pull = await get<{ base: { ref: string }; head: { repo: { default_branch: string } | null } }>(gh, `repos/${repo}/pulls/${n}`);
+    const pull = await get<{ body: string | null; base: { ref: string }; head: { repo: { default_branch: string } | null } }>(gh, `repos/${repo}/pulls/${n}`);
     const files = (await getAll<{ filename: string; additions: number; deletions: number }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).filter((f) => !isNoise(f.filename));
     const stacked = pull.base.ref !== (pull.head.repo?.default_branch ?? 'main');
-    print(plan(files, { stacked, orgRules: profile.ruleSources.length > 0 }));
+    print(plan(files, { stacked, orgRules: profile.ruleSources.length > 0, body: stripHidden(pull.body ?? '').text }));
     return 0;
   },
 

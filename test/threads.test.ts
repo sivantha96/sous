@@ -38,3 +38,18 @@ test('review threads are read across every page', async () => {
   assert.deepEqual(await reviewThreads(gh, 'o/r', 3), [{ id: 'T1', isResolved: false, firstCommentId: 1 }, { id: 'T2', isResolved: true, firstCommentId: 2 }]);
   assert.equal(calls.length, 2);
 });
+
+test('a reply Sous already answered is not new again, even when state lost it from handled', () => {
+  const pr = { ...emptyPr('h'), commentIds: [1] };
+  const sous = c(3, 'me', { in_reply_to_id: 1, body: 'confirmed\n\n<!-- sous:abc123 -->' });
+  assert.deepEqual(threadSignals([c(1, 'me'), c(2, 'dev', { in_reply_to_id: 1 }), sous], pr, 'me'), []);
+  assert.deepEqual(threadSignals([c(1, 'me'), c(2, 'dev', { in_reply_to_id: 1 }), c(3, 'me', { in_reply_to_id: 1 })], { ...pr, replyIds: [3] }, 'me'), []);
+  const later = threadSignals([c(1, 'me'), c(2, 'dev', { in_reply_to_id: 1 }), sous, c(4, 'dev', { in_reply_to_id: 1 })], pr, 'me');
+  assert.deepEqual(later[0]!.replies.map((r) => r.id), [4], 'a newer reply still counts');
+});
+
+test('Sous has the last word when its marked reply is last, even if state lost the reply id', async () => {
+  const { sousHasLastWord } = await import('../src/threads.ts');
+  const pr = { ...emptyPr('h'), commentIds: [1] };
+  assert.equal(sousHasLastWord([c(1, 'me'), c(2, 'dev', { in_reply_to_id: 1 }), c(3, 'me', { in_reply_to_id: 1, body: 'ok\n\n<!-- sous:abc123 -->' })], pr, 1), true);
+});

@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { appendLine, orgDir, readJson, writeJson } from './home.ts';
 
@@ -31,18 +31,79 @@ export const prKey = (repo: string, n: number): string => `${repo}#${n}`;
 
 const statePath = (org: string): string => join(orgDir(org), 'state.json');
 
-export function loadState(org: string): OrgState {
+function readState(org: string): OrgState {
   const s = readJson<{ prs?: Record<string, Partial<PrState>> }>(statePath(org), {});
   // Fill fields added after a PR was first recorded.
   const prs = Object.fromEntries(Object.entries(s.prs ?? {}).map(([k, v]) => [k, { ...emptyPr(v.head ?? ''), ...v } as PrState]));
   return { prs };
 }
 
-export function saveState(org: string, s: OrgState): void {
-  writeJson(statePath(org), s);
+/** Each PR as it was when this copy of the state was loaded, so a save writes back only what this process changed. */
+const loaded = new WeakMap<OrgState, Record<string, string>>();
+
+export function loadState(org: string): OrgState {
+  const s = readState(org);
+  loaded.set(s, Object.fromEntries(Object.entries(s.prs).map(([k, v]) => [k, JSON.stringify(v)])));
+  return s;
 }
 
-export type EventType = 'reviewed' | 'deferred' | 'dismissed' | 'skipped' | 'lint-refused' | 'replied' | 'resolved' | 'seen' | 'adopted' | 'dropped' | 'request-not-restored' | 'rebase-skip' | 'usage' | 'eval-started' | 'outbound-refused' | 'blocked';
+const union = (a: number[], b: number[]): number[] => [...new Set([...a, ...b])];
+
+/** Two processes' versions of one PR: ids from both, fields and reaction counts from the one saving now. */
+export function mergePr(onDisk: PrState | undefined, mine: PrState): PrState {
+  if (!onDisk) return mine;
+  return {
+    ...onDisk,
+    ...mine,
+    reviewIds: union(onDisk.reviewIds, mine.reviewIds),
+    commentIds: union(onDisk.commentIds, mine.commentIds),
+    replyIds: union(onDisk.replyIds, mine.replyIds),
+    handled: union(onDisk.handled, mine.handled),
+    reactions: { ...onDisk.reactions, ...mine.reactions },
+  };
+}
+
+/**
+ * Runs and subagents save state in parallel, each from a copy it loaded minutes earlier. Saving
+ * that whole copy wiped what others had saved since (a reply marked handled came back as new and
+ * was answered again every hour). So a save takes a lock, re-reads the file, and writes back only
+ * the PRs this copy changed, merged into what is on disk.
+ */
+export function saveState(org: string, s: OrgState): void {
+  const before = loaded.get(s) ?? {};
+  withStateLock(org, () => {
+    const fresh = readState(org);
+    for (const [k, v] of Object.entries(s.prs)) if (JSON.stringify(v) !== before[k]) fresh.prs[k] = mergePr(fresh.prs[k], v);
+    writeJson(statePath(org), fresh);
+    loaded.set(s, Object.fromEntries(Object.entries(s.prs).map(([k, v]) => [k, JSON.stringify(v)])));
+  });
+}
+
+/** A lock folder next to the state file; one left by a crashed process for over 30 seconds is taken over. */
+function withStateLock(org: string, fn: () => void): void {
+  const lock = `${statePath(org)}.lock`;
+  mkdirSync(orgDir(org), { recursive: true });
+  const wait = new Int32Array(new SharedArrayBuffer(4));
+  // About 10 seconds of 50 ms waits; a lock older than 30 seconds belongs to a process that died.
+  for (let i = 0; ; i++) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+      const age = Date.now() - (statSync(lock, { throwIfNoEntry: false })?.mtimeMs ?? Date.now());
+      if (age > 30_000 || i >= 200) rmSync(lock, { recursive: true, force: true });
+      else Atomics.wait(wait, 0, 0, 50);
+    }
+  }
+  try {
+    fn();
+  } finally {
+    rmSync(lock, { recursive: true, force: true });
+  }
+}
+
+export type EventType = 'reviewed' | 'deferred' | 'dismissed' | 'skipped' | 'lint-refused' | 'replied' | 'resolved' | 'seen' | 'adopted' | 'dropped' | 'request-not-restored' | 'rebase-skip' | 'usage' | 'eval-started' | 'outbound-refused' | 'blocked' | 'scored';
 
 /** One append-only log every metric reads from. */
 export function logEvent(org: string, type: EventType, data: Record<string, unknown>): void {

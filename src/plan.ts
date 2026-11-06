@@ -13,6 +13,8 @@ export interface Plan {
   drivers: string[];
   lenses: string[];
   missedPass: boolean;
+  /** The PR description says how the change was tested: steps, commands, screenshots or a testing section. */
+  testingNotes: boolean;
   /** Files ordered most important first, for large PRs. */
   order: string[];
 }
@@ -34,7 +36,14 @@ const isTest = (p: string): boolean => /(^|\/)(tests?|__tests__|spec)\//.test(p)
 /** Lenses every review runs, whatever the paths. */
 const ALWAYS = ['correctness', 'tests-and-guards', 'pr-hygiene', 'docs-and-decisions'];
 
-export function plan(files: PlanFile[], opts: { stacked: boolean; orgRules: boolean }): Plan {
+/** A testing heading, a checked test box, a command block, or an image or video in the PR description. */
+export const hasTestingNotes = (body: string): boolean =>
+  /^#{1,6}\s*(how (was this|to|i) test\w*|test(ing|ed|s)?|verification|verified|qa)\b/im.test(body) ||
+  /^\s*[-*]\s*\[x\].*\b(test|verif|tried|ran)/im.test(body) ||
+  /```[\s\S]*?\b(test|curl|pnpm|npm|yarn|pytest|go test)\b[\s\S]*?```/i.test(body) ||
+  /!\[[^\]]*\]\(|<img\s|<video\s|\.(png|jpe?g|gif|mp4|mov)\b/i.test(body);
+
+export function plan(files: PlanFile[], opts: { stacked: boolean; orgRules: boolean; body?: string }): Plan {
   const drivers = new Set<string>();
   const lenses = new Set(ALWAYS);
   let risk = 0;
@@ -71,12 +80,19 @@ export function plan(files: PlanFile[], opts: { stacked: boolean; orgRules: bool
     }
   } else {
     lenses.add('specs-and-safety');
+    // Every PR past the core tier also gets an attacker: a lens that tries to break the change.
+    lenses.add('breaker');
   }
+  // Only code changes need testing notes; a docs or test-only PR doesn't.
+  const changesCode = files.some((f) => !isTest(f.filename) && !/\.(md|mdx|txt)$/i.test(f.filename));
+  const testingNotes = !changesCode || hasTestingNotes(opts.body ?? '');
+  if (!testingNotes) drivers.add('no testing notes in the PR description');
   return {
     risk,
     drivers: [...drivers],
     lenses: [...lenses],
     missedPass: risk >= 40,
+    testingNotes,
     order: [...files].sort((a, b) => (weightOf.get(b.filename) ?? 0) - (weightOf.get(a.filename) ?? 0)).map((f) => f.filename),
   };
 }

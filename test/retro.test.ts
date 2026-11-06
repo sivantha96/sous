@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { retro, runSummary } from '../src/retro.ts';
+import { checkScores, cycleTimes, qualityAverages, retro, runSummary } from '../src/retro.ts';
 import type { LoggedEvent } from '../src/state.ts';
 
 const u = (input: number, cacheRead = 0) => ({ m: { input, output: 0, cacheRead, cacheWrite: 0, calls: 1 } });
@@ -44,4 +44,35 @@ test('the run summary has one linked row per PR with its comments, replies and r
     ['| PR | Comments | Replies | Resolved | Note |', '|---|---|---|---|---|', '| [o/r#2](https://github.com/o/r/pull/2) | 2 | 1 | 1 |  |', '| [o/r#3](https://github.com/o/r/pull/3) | 0 | 0 | 0 | deferred |'].join('\n'),
   );
   assert.equal(runSummary([], '2026-11-05T00:00:00Z'), 'No PRs reviewed and nothing posted.');
+});
+
+const good = { grounded: 5, clear: 4, actionable: 4, worthIt: 5 };
+
+test('the judge file needs every score from 1 to 5, and a reason for each low one', () => {
+  assert.deepEqual(checkScores({ reviews: [{ pr: 'o/r#2', scores: good }] }), [{ pr: 'o/r#2', scores: good, low: [] }]);
+  assert.throws(() => checkScores({}), /reviews/);
+  assert.throws(() => checkScores({ reviews: [{ pr: 'r#2', scores: good }] }), /owner\/repo#12/);
+  assert.throws(() => checkScores({ reviews: [{ pr: 'o/r#2', scores: { ...good, clear: 6 } }] }), /clear/);
+  assert.throws(() => checkScores({ reviews: [{ pr: 'o/r#2', scores: { ...good, worthIt: 2 } }] }), /needs a "low" entry/);
+  assert.equal(checkScores({ reviews: [{ pr: 'o/r#2', scores: { ...good, worthIt: 2 }, low: [{ id: 'nit-1', why: 'a nit nobody needs' }] }] })[0]!.low.length, 1);
+});
+
+test('the retro lists low scores; stats average them', () => {
+  const events: LoggedEvent[] = [
+    { at: '2026-11-05T00:00:01Z', type: 'scored', pr: 'o/r#2', scores: good },
+    { at: '2026-11-05T00:00:02Z', type: 'scored', pr: 'o/r#3', scores: { ...good, worthIt: 1 } },
+  ];
+  assert.deepEqual(retro(events, '2026-11-05T00:00:00Z').lowScores.map((e) => e.pr), ['o/r#3']);
+  assert.deepEqual(qualityAverages(events), { reviews: 2, grounded: 5, clear: 4, actionable: 4, worthIt: 3 });
+  assert.equal(qualityAverages([]), null);
+});
+
+test('cycle time runs from opening to the first Sous review, and from that review to the merge', () => {
+  const events: LoggedEvent[] = [
+    { at: '2026-11-05T02:00:00Z', type: 'reviewed', pr: 'o/r#2' },
+    { at: '2026-11-05T09:00:00Z', type: 'reviewed', pr: 'o/r#2' },
+    { at: '2026-11-05T04:00:00Z', type: 'reviewed', pr: 'o/r#3' },
+  ];
+  const prs = { 'o/r#2': { createdAt: '2026-11-05T00:00:00Z', mergedAt: '2026-11-05T12:00:00Z' }, 'o/r#3': { createdAt: '2026-11-05T00:00:00Z', mergedAt: null } };
+  assert.deepEqual(cycleTimes(events, prs), { prs: 2, merged: 1, medianHoursToFirstReview: 3, medianHoursFromReviewToMerge: 10 });
 });

@@ -41,7 +41,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `sous owners` | Changed paths whose CODEOWNERS owners (from the base branch, last match wins) nobody asked to review |
 | `sous skills` | The installed Claude Code skills the org profile lists (`skills`: name and paths) that match the PR's paths, with each SKILL.md |
 | `sous noise` | Prints which paths are lockfiles or generated output |
-| `sous plan` | Risk score, drivers, lenses, the missed pass and file order, from the changed paths alone (no model call) |
+| `sous plan` | Risk score, drivers, lenses (the `breaker` attacker past the core tier), the missed pass, file order, and whether the description says how the change was tested (no model call) |
 | `sous memory` | Memory bullets for a PR, by scope and by the names the diff touches, ranked; `sous memory hits <org>` shows when each bullet last drove a posted finding |
 | `sous facts` | Checks cited facts against the repo: stale (file changed since the pinned commit) or gone; `--pin` records commits, `--retire` removes facts whose files are gone |
 | `sous links` | Freezes code the PR body and linked issues point to, pinned to a commit; never copies private code into a public repo review |
@@ -60,8 +60,9 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `sous tokens` | Token use and running time per subagent and model for a session, from Claude Code transcripts; `--org` logs it |
 | `sous retro` | The last run for the learning round: its reviews, problems (refusals, skips, blocks, deferrals), paid tokens and minutes, next to the median of the 10 runs before it. No model tokens |
 | `sous summary` | The run's last message: one row per PR it touched, linked, with the comments, replies and resolved threads Sous posted. No model tokens |
+| `sous quality` | Logs the review-judge's scores after checking each one is there and from 1 to 5. No model tokens |
 | `sous stagekey` | Cache key for one eval stage (same head, prompts and memory, same key), so reruns reuse it |
-| `sous stats` | Reviews, findings, refusals, drops, replies and tokens from the event log; `/stats` answers questions from it |
+| `sous stats` | Reviews, findings, refusals, drops, replies, average review scores, cycle time (opening to first review, review to merge) and tokens; `/stats` answers questions from it |
 | `sous pause [org]` / `resume [org]` | Stops posting; reviews become pending drafts |
 
 ## Subagents
@@ -75,6 +76,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `signal-collector` | Haiku | What changed since the last learning round |
 | `match-judge` | Haiku | In `/eval`, pairs your points with Sous findings that make the same point anywhere |
 | `reply-judge` | Sonnet, Opus for hard cases | Weighs teammates' replies and reactions, on a push too: checks a claimed fix and confirms it with a reply before resolving, follows up once on what still fails, withdraws, or asks you |
+| `review-judge` | Sonnet | Scores each posted review on grounded, clear, actionable and worth a human's time, so the learning round sees weak ones |
 | `reflector` | Opus | Reviews the run (problems, tokens and time against recent runs) and the signals: memory edits behind the replay gate, engine fixes for `/learn` to turn into PRs on your yes, questions for you. Skipped when a run had no signals, no problems and a normal cost |
 
 ## Rules this code enforces

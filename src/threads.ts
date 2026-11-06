@@ -22,13 +22,17 @@ export interface ThreadSignal {
   reactions: { total: number; seenBefore: number; up: number; down: number; confused: number } | null;
 }
 
+const hasSousMarker = (body: string | null | undefined): boolean => /<!-- sous:[0-9a-f]+ -->/.test(body ?? '');
+
 export function threadSignals(comments: PrComment[], pr: PrState, me: string): ThreadSignal[] {
   const own = new Set(pr.commentIds);
   const handled = new Set(pr.handled);
   const out: ThreadSignal[] = [];
   for (const c of comments.filter((c) => own.has(c.id))) {
+    // A Sous reply in the thread after it means it was answered, even if state lost `handled`.
+    const lastSous = Math.max(0, ...comments.filter((r) => r.in_reply_to_id === c.id && (pr.replyIds.includes(r.id) || hasSousMarker(r.body))).map((r) => r.id));
     const replies = comments
-      .filter((r) => r.in_reply_to_id === c.id && r.user?.login !== me && !handled.has(r.id))
+      .filter((r) => r.in_reply_to_id === c.id && r.user?.login !== me && !handled.has(r.id) && r.id > lastSous)
       .map((r) => ({ id: r.id, user: r.user?.login ?? 'ghost', body: r.body }));
     const total = c.reactions?.total_count ?? 0;
     const seenBefore = pr.reactions[String(c.id)] ?? 0;
@@ -93,5 +97,5 @@ export async function threadIdFor(
 /** Whether Sous wrote the last comment in the thread its comment starts: a follow-up is said once, then it waits. */
 export function sousHasLastWord(comments: PrComment[], pr: PrState, commentId: number): boolean {
   const last = comments.filter((c) => c.id === commentId || c.in_reply_to_id === commentId).reduce((a, c) => (c.id > a.id ? c : a));
-  return pr.commentIds.includes(last.id) || pr.replyIds.includes(last.id);
+  return pr.commentIds.includes(last.id) || pr.replyIds.includes(last.id) || hasSousMarker(last.body);
 }

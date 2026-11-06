@@ -17,6 +17,7 @@ const ROLES: Record<string, Role> = {
   verifier: 'reader',
   'match-judge': 'reader',
   'signal-collector': 'reader',
+  'review-judge': 'reader',
   writer: 'writer',
   'reply-judge': 'reply-judge',
   reflector: 'reflector',
@@ -217,7 +218,7 @@ export interface HookInput {
  * The verifier and writer judge findings against the code, never the PR's own words: a judge that
  * reads the author's text can be addressed by it. They are refused the gatherer's PR-text file.
  */
-const BLIND = new Set(['verifier', 'writer']);
+const BLIND = new Set(['verifier', 'writer', 'review-judge']);
 const PR_TEXT = /\.pr-text\.md\b/;
 
 /** Added to a subagent's refused Bash call, so the next call is one that passes. */
@@ -228,7 +229,7 @@ export function decide(input: HookInput): Verdict {
   const cwd = input.cwd ?? process.cwd();
   // Only what is read or run: a file's content may name the PR-text file without reading it.
   const { command, file_path, path, pattern, glob } = input.tool_input;
-  if (input.agent_type && BLIND.has(input.agent_type) && PR_TEXT.test([command, file_path, path, pattern, glob].join(' '))) return no('the verifier and writer never read the PR text; judge from the code and the findings');
+  if (input.agent_type && BLIND.has(input.agent_type) && PR_TEXT.test([command, file_path, path, pattern, glob].join(' '))) return no('the verifier, writer and review-judge never read the PR text; judge from the code and the findings');
   if (input.tool_name === 'Bash') {
     const v = checkCommand(command ?? '', role, cwd);
     return v.ok || role === 'main' ? v : no(v.reason + SHELL_HINT);
