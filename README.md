@@ -46,7 +46,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `sous facts` | Checks cited facts against the repo: stale (file changed since the pinned commit) or gone; `--pin` records commits, `--retire` removes facts whose files are gone |
 | `sous links` | Freezes code the PR body and linked issues point to, pinned to a commit; never copies private code into a public repo review |
 | `sous post` | The only way a review leaves the machine. Adopts an earlier post on the same head; checks every anchor, evidence and counter-evidence quote against the real files (moving a miscounted line within 3, completing a shortened path); drops points Sous already made; allows one `--repair` limited to line, side, path and quote; posts inline comments only, on added or removed lines, with the attribution and marker; COMMENT or REQUEST_CHANGES, never APPROVE; gives back your review request |
-| `sous decisions` | Fails unless every lens candidate id has exactly one verifier decision |
+| `sous decisions` | Fails unless every lens candidate id has exactly one verifier decision and every kept finding has counter-evidence |
 | `sous mark` | Records a head reviewed with nothing to post; needs the verifier result (`--verified`) |
 | `sous dismiss` | Dismisses a request-changes review, only one Sous wrote |
 | `sous leak-check` | Fails when text bound for git names anything from local org memory |

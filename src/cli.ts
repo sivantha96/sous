@@ -366,7 +366,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       if (!comments.some((c) => c.body.includes(marker(draft.head)))) continue;
       state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, r.id], commentIds: [...prev.commentIds, ...comments.map((c) => c.id)] };
       saveState(draft.org, state);
-      logEvent(draft.org, 'adopted', { pr: key, head: draft.head, reviewId: r.id });
+      logEvent(draft.org, 'adopted', { pr: key, head: draft.head, reviewId: r.id, comments: comments.length });
       print({ pr: key, adopted: r.id });
       return 0;
     }
@@ -465,13 +465,19 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     return 0;
   },
 
-  /** Fails unless every lens candidate id has exactly one verifier decision. */
+  /**
+   * Fails unless every lens candidate id has exactly one verifier decision and every kept finding
+   * still has counter-evidence (`sous post` refuses one without, and a repair can't add it back).
+   */
   async decisions(args) {
     const [verifiedFile, ...lensFiles] = args;
     if (!verifiedFile || lensFiles.length === 0) throw new Error('usage: sous decisions <verified.json> <lens.json...>');
     const ids = lensFiles.flatMap((f) => (JSON.parse(readFileSync(f, 'utf8')) as { candidates?: { id?: string }[] }).candidates ?? []).map((c, i) => c.id ?? `missing-id-${i}`);
-    const missing = missingDecisions(ids, JSON.parse(readFileSync(verifiedFile, 'utf8')));
-    print({ candidates: ids.length, missing });
+    const verified = JSON.parse(readFileSync(verifiedFile, 'utf8')) as { kept?: { id?: string; merged?: string[]; counterEvidence?: unknown[] }[]; dropped?: { id?: string }[] };
+    const noCounterEvidence = (verified.kept ?? []).filter((k) => !k.counterEvidence?.length).map((k) => k.id ?? '?');
+    // Listed in `missing` too, so the one resend the review already makes covers them.
+    const missing = [...missingDecisions(ids, verified), ...noCounterEvidence];
+    print({ candidates: ids.length, missing, noCounterEvidence });
     return missing.length ? 1 : 0;
   },
 

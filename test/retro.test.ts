@@ -15,10 +15,11 @@ test('the retro covers only this run, lists its problems and compares its cost w
     { at: '2026-11-05T00:00:01Z', type: 'reviewed', pr: 'o/r#2', event: 'COMMENT', findings: [{}, {}] },
     { at: '2026-11-05T00:00:02Z', type: 'outbound-refused', pr: 'o/r#2' },
     { at: '2026-11-05T00:00:03Z', type: 'seen', pr: 'o/r#2' },
+    { at: '2026-11-05T00:00:04Z', type: 'adopted', pr: 'o/r#3', comments: 4 },
     usage('2026-11-05T00:01:00Z', 500, 240),
   ];
   const r = retro(events, '2026-11-05T00:00:00Z');
-  assert.deepEqual(r.reviews, [{ pr: 'o/r#2', event: 'COMMENT', findings: 2 }]);
+  assert.deepEqual(r.reviews, [{ pr: 'o/r#2', event: 'COMMENT', findings: 2 }, { pr: 'o/r#3', event: 'ADOPTED', findings: 4 }]);
   assert.deepEqual(r.problems.map((e) => e.type), ['outbound-refused']);
   assert.deepEqual(r.cost, { paidTokens: 500, cacheReadTokens: 5, seconds: 240, byAgent: { lens: { paidTokens: 500, seconds: 120 }, main: { paidTokens: 0, seconds: 240 } } });
   assert.deepEqual(r.recent, { runs: 2, medianPaidTokens: 200, medianSeconds: 120 });

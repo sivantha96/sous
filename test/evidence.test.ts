@@ -57,6 +57,11 @@ test('a repair changes only line, side, path or quote', () => {
   assert.equal(f!.evidence![0]!.quote, 'a');
 });
 
+test('a repair aimed at a missing finding or item fails loudly instead of doing nothing', () => {
+  assert.throws(() => applyCorrections([{ ...base, counterEvidence: [] }], [{ index: 0, target: 'counterEvidence', item: 0, field: 'quote', value: 'q' }]), /can't add one/);
+  assert.throws(() => applyCorrections([base], [{ index: 3, target: 'anchor', field: 'line', value: 2 }]), /no such finding/);
+});
+
 test('the same point already posted is a duplicate; a different point on the same line is not', () => {
   const e = { path: 'src/a.ts', line: 10, body: 'this throws on an empty list. more' };
   assert.ok(isDuplicate({ path: 'src/a.ts', line: 12, body: 'this throws on an empty list' }, e));
