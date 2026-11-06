@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { checkCommand, decide, roleOf } from '../src/guard.ts';
+import { checkCommand, decide, roleOf, SHELL_HINT } from '../src/guard.ts';
 
 const ok = (cmd: string, role = roleOf('lens')) => checkCommand(cmd, role, '/tmp').ok;
 
@@ -54,13 +54,14 @@ test('credential paths and env files are refused, also through symlinks', () => 
   assert.equal(checkCommand(`cat ${join(dir, 'innocent')}/id`, 'reader', dir).ok, false);
 });
 
-test('the writer may post and mark; the reflector may commit and open a PR, never force', () => {
+test('the writer may post and mark; the reflector may commit memory, never push or open a PR', () => {
   assert.ok(checkCommand('./bin/sous post d.json', 'writer', '/tmp').ok);
   assert.ok(!checkCommand('./bin/sous reply o o/r 1 2 f', 'writer', '/tmp').ok);
   assert.ok(checkCommand('./bin/sous reply o o/r 1 2 f', 'reply-judge', '/tmp').ok);
   assert.ok(checkCommand('git commit -m x', 'reflector', '/tmp').ok);
-  assert.ok(checkCommand('gh pr create --title x --body y', 'reflector', '/tmp').ok);
-  assert.ok(!checkCommand('git push --force origin x', 'reflector', '/tmp').ok);
+  assert.ok(!checkCommand('gh pr create --title x --body y', 'reflector', '/tmp').ok);
+  assert.ok(!checkCommand('git push origin x', 'reflector', '/tmp').ok);
+  assert.ok(!checkCommand('git switch -c x', 'reflector', '/tmp').ok);
   assert.ok(!checkCommand('gh pr merge 1', 'reflector', '/tmp').ok);
 });
 
@@ -124,8 +125,10 @@ test('writes: credentials, .git, guard files and paths outside ~/.sous are refus
   assert.equal(checkWrite(join(tmpdir(), 'scratch.json'), 'reader', '/tmp').ok, true);
   assert.equal(checkWrite(join(homedir(), 'notes.md'), 'writer', '/tmp').ok, false);
   assert.equal(checkWrite(join(home, 'orgs', 'o', '.git', 'hooks', 'post-commit'), 'reflector', '/tmp').ok, false);
-  assert.equal(checkWrite(join(root, 'src', 'plan.ts'), 'reflector', '/tmp').ok, true);
-  assert.equal(checkWrite(join(root, 'src', 'plan.ts'), 'writer', '/tmp').ok, false);
+  // A clone in the temp folder is writable as temp space, so this holds only for a real checkout.
+  if (!realpathSync(root).startsWith(realpathSync(tmpdir()))) {
+    for (const role of ['reflector', 'writer'] as const) assert.equal(checkWrite(join(root, 'src', 'plan.ts'), role, '/tmp').ok, false, role);
+  }
   for (const f of ['src/guard.ts', 'src/vendor/shell-policy.ts', 'bin/sous-guard', '.claude/settings.json', 'src/outbound.ts']) {
     assert.equal(checkWrite(join(root, f), 'reflector', '/tmp').ok, false, f);
     assert.equal(checkWrite(join(root, f), 'main', '/tmp', {}).ok, false, `main: ${f}`);
@@ -142,6 +145,23 @@ test('the verifier and writer never read the PR text; lenses do', () => {
     assert.equal(decide({ tool_name: 'Bash', tool_input: { command: `cat ${f}` }, agent_type: agent }).ok, false, agent);
   }
   assert.equal(decide({ tool_name: 'Read', tool_input: { file_path: f }, agent_type: 'lens' }).ok, true);
+  const q = `${homedir()}/.sous/orgs/o/questions.md`;
+  assert.equal(decide({ tool_name: 'Write', tool_input: { file_path: q, content: 'the .pr-text.md file says' } as never, agent_type: 'writer' }).ok, true);
+});
+
+test('sous runs only as ./bin/sous; any other path would run sandboxed, without the token', () => {
+  for (const role of ['reader', 'writer', 'main'] as const) {
+    assert.ok(!checkCommand('/opt/sous/bin/sous prtext o o/r 1', role, '/tmp').ok, role);
+    assert.ok(!checkCommand('bin/sous due', role, '/tmp').ok, role);
+  }
+  assert.ok(checkCommand('./bin/sous status o o/r 1', 'reader', '/tmp').ok);
+  assert.ok(checkCommand('"$CLAUDE_PROJECT_DIR"/bin/sous-guard', 'main', '/tmp').ok);
+});
+
+test("a subagent's refused Bash call says what to use instead", () => {
+  const v = decide({ tool_name: 'Bash', tool_input: { command: 'cd /tmp' }, agent_type: 'lens' });
+  assert.ok(!v.ok && v.reason.endsWith(SHELL_HINT));
+  assert.ok(decide({ tool_name: 'Bash', tool_input: { command: '/usr/bin/git -C /tmp log -1' }, agent_type: 'lens' }).ok);
 });
 
 test('gh and sous run as a call of their own, since a chained one runs in the sandbox without the token', () => {

@@ -74,7 +74,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `signal-collector` | Haiku | What changed since the last learning round |
 | `match-judge` | Haiku | In `/eval`, pairs your points with Sous findings that make the same point anywhere |
 | `reply-judge` | Sonnet, Opus for hard cases | Weighs teammates' replies and reactions: adopts, withdraws, answers once, or asks you |
-| `reflector` | Opus | Reviews the run (problems, tokens and time against recent runs) and the signals: memory edits behind the replay gate, engine PRs, questions for you. Skipped when a run had no signals, no problems and a normal cost |
+| `reflector` | Opus | Reviews the run (problems, tokens and time against recent runs) and the signals: memory edits behind the replay gate, engine fixes for `/learn` to turn into PRs on your yes, questions for you. Skipped when a run had no signals, no problems and a normal cost |
 
 ## Rules this code enforces
 
@@ -99,7 +99,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | reader | gatherer, lens, verifier, match-judge, signal-collector, and any unknown one | read-only commands (`src/vendor/shell-policy.ts`), read-only `git` and `gh`, read-only `sous` commands |
 | writer | writer | the same, plus `sous post` and `sous mark` |
 | reply-judge | reply-judge | the same, plus `sous reply`, `resolve` and `seen` |
-| reflector | reflector | the same, plus git commits and pushes (never forced), `gh pr create`, `pnpm check` |
+| reflector | reflector | the same, plus `git add`, `commit` and `revert` in memory folders |
 | main | the orchestrating session | anything but network tools and commands that print credentials |
 
 No role may use `curl`, `wget`, `ssh` or other network tools, print a credential (`gh auth token`, `printenv`, a bare `env`, keychain and Doppler reads), point `gh` at a host other than github.com, or read credentials and env files (`.env.example` excepted), including through a symlink.
@@ -140,4 +140,4 @@ A subagent that reads text a stranger wrote, holds private data and can send som
 | match-judge | past review comments | eval cases | no | |
 | writer | only through findings | voice and examples | `sous post` | voice lint, evidence quotes, `outbound.ts`, a fixed recipient, a comment cap |
 | reply-judge | teammate replies | org memory | `sous reply`, `resolve` | voice lint, `outbound.ts`, only its own threads |
-| reflector | through events and questions | all memory | git pushes and PRs to this repo | `sous leak-check`, the protected guard files, never merges |
+| reflector | through events and questions | all memory | no: engine fixes wait in `engine-fixes.md` for `/learn` | the protected guard files; writes only under `~/.sous` |
