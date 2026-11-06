@@ -49,3 +49,33 @@ export function retro(events: LoggedEvent[], since: string, history = 10) {
     recent: { runs: past.length, medianPaidTokens: median(past.map((u) => paid(u.totals))), medianSeconds: median(past.map((u) => u.seconds?.main ?? 0).filter(Boolean)) },
   };
 }
+
+/**
+ * The run's last message: one row per PR this run touched, with its link and what Sous posted on it.
+ * `pr` is `owner/repo#n`, as every event logs it.
+ */
+export function runSummary(events: LoggedEvent[], since: string): string {
+  const rows = new Map<string, { comments: number; replies: number; resolved: number; notes: string[] }>();
+  for (const e of events) {
+    if (e.at < since || typeof e.pr !== 'string') continue;
+    const counted = e.type === 'reviewed' || e.type === 'adopted' || e.type === 'replied' || e.type === 'resolved' || PROBLEMS.has(e.type);
+    if (!counted) continue;
+    const r = rows.get(e.pr) ?? { comments: 0, replies: 0, resolved: 0, notes: [] };
+    rows.set(e.pr, r);
+    if (e.type === 'reviewed') r.comments += Array.isArray(e.findings) ? e.findings.length : 0;
+    else if (e.type === 'adopted') r.comments += typeof e.comments === 'number' ? e.comments : 0;
+    else if (e.type === 'replied') r.replies++;
+    else if (e.type === 'resolved') r.resolved++;
+    else if (!r.notes.includes(e.type)) r.notes.push(e.type);
+  }
+  if (!rows.size) return 'No PRs reviewed and nothing posted.';
+  const link = (pr: string) => {
+    const [repo, n] = pr.split('#');
+    return `[${pr}](https://github.com/${repo}/pull/${n})`;
+  };
+  return [
+    '| PR | Comments | Replies | Resolved | Note |',
+    '|---|---|---|---|---|',
+    ...[...rows].map(([pr, r]) => `| ${link(pr)} | ${r.comments} | ${r.replies} | ${r.resolved} | ${r.notes.join(', ')} |`),
+  ].join('\n');
+}

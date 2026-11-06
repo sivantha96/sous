@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { retro } from '../src/retro.ts';
+import { retro, runSummary } from '../src/retro.ts';
 import type { LoggedEvent } from '../src/state.ts';
 
 const u = (input: number, cacheRead = 0) => ({ m: { input, output: 0, cacheRead, cacheWrite: 0, calls: 1 } });
@@ -28,4 +28,20 @@ test('the retro covers only this run, lists its problems and compares its cost w
 test('a run that logged no usage says so instead of reporting zero', () => {
   assert.equal(retro([], '2026-11-05T00:00:00Z').cost, null);
   assert.deepEqual(retro([], '2026-11-05T00:00:00Z').recent, { runs: 0, medianPaidTokens: null, medianSeconds: null });
+});
+
+test('the run summary has one linked row per PR with its comments, replies and resolved threads', () => {
+  const events: LoggedEvent[] = [
+    { at: '2026-11-04T00:00:00Z', type: 'replied', pr: 'o/r#9' },
+    { at: '2026-11-05T00:00:01Z', type: 'replied', pr: 'o/r#2' },
+    { at: '2026-11-05T00:00:02Z', type: 'resolved', pr: 'o/r#2' },
+    { at: '2026-11-05T00:00:03Z', type: 'reviewed', pr: 'o/r#2', event: 'COMMENT', findings: [{}, {}] },
+    { at: '2026-11-05T00:00:04Z', type: 'deferred', pr: 'o/r#3' },
+    { at: '2026-11-05T00:00:05Z', type: 'seen', pr: 'o/r#4' },
+  ];
+  assert.equal(
+    runSummary(events, '2026-11-05T00:00:00Z'),
+    ['| PR | Comments | Replies | Resolved | Note |', '|---|---|---|---|---|', '| [o/r#2](https://github.com/o/r/pull/2) | 2 | 1 | 1 |  |', '| [o/r#3](https://github.com/o/r/pull/3) | 0 | 0 | 0 | deferred |'].join('\n'),
+  );
+  assert.equal(runSummary([], '2026-11-05T00:00:00Z'), 'No PRs reviewed and nothing posted.');
 });

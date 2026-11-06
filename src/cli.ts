@@ -19,7 +19,7 @@ import { assertOwnThread, reviewThreads, sousHasLastWord, threadIdFor, type PrCo
 import { lintText } from './voice-lint.ts';
 import { codeLinks, plan } from './plan.ts';
 import { mergeUsage, spanSeconds, subagentLogs, usageByModel, type Usage } from './usage.ts';
-import { retro } from './retro.ts';
+import { retro, runSummary } from './retro.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -906,6 +906,14 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const [org, since] = args;
     if (!org || !since || Number.isNaN(Date.parse(since))) throw new Error('usage: sous retro <org> <run start ISO time>');
     print(retro(readEvents(org), since));
+    return 0;
+  },
+
+  /** The run's last message: each PR it touched, linked, with the comments, replies and resolved threads it posted. */
+  async summary(args) {
+    const [org, since] = args;
+    if (!org || !since || Number.isNaN(Date.parse(since))) throw new Error('usage: sous summary <org> <run start ISO time>');
+    console.log(runSummary(readEvents(org), since));
     return 0;
   },
 
