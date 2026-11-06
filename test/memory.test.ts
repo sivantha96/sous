@@ -26,6 +26,14 @@ test('search finds bullets by scope and by the diff names, ranked', () => {
   assert.ok(!scopeMatches(['services/api/**'], ['services/web/x.ts']));
 });
 
+test('the limit never cuts a bullet scoped to the changed paths, only `all` and term hits', () => {
+  const all = parseBullets('rules.md', Array.from({ length: 5 }, (_, i) => `- [scope: all] general rule ${i}`).join('\n'));
+  const [narrow] = parseBullets('rules.md', '- [scope: apps/**] every app keeps a .env.example');
+  const hits = searchMemory([...all, { ...narrow!, line: 99 }], ['apps/web/a.ts'], [], 3);
+  assert.equal(hits.length, 4);
+  assert.ok(hits.some((h) => h.bullet.line === 99));
+});
+
 test('diff terms: exports, env vars, endpoints, packages, basenames', () => {
   const t = diffTerms([{ filename: 'src/money/charge.ts', patch: "@@ -1 +1 @@\n+export function chargeCard() {}\n+const k = process.env.STRIPE_API_KEY\n+fetch('/v1/orders/{id}')\n+import x from '@dinetap/flags'" }]);
   for (const x of ['charge', 'chargeCard', 'STRIPE_API_KEY', '/v1/orders/{id}', '@dinetap/flags']) assert.ok(t.includes(x), x);
