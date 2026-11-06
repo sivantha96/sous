@@ -31,3 +31,17 @@ test('a PR asks for your review by name or through a team you are in, in its own
   askByHand('acme', 'acme/r#1');
   assert.ok(askedByHand('acme', 'acme/r#1'));
 });
+
+test('one review per PR: a second session is refused until the first releases or its lock expires', async () => {
+  const { takePrLock, releasePrLock } = await import('../src/state.ts');
+  const t0 = new Date('2026-11-05T10:00:00Z');
+  assert.ok(takePrLock('o', 'o/r#1', 'a', t0).ok);
+  assert.ok(takePrLock('o', 'o/r#1', 'a', t0).ok, 'the holder may take it again');
+  const refused = takePrLock('o', 'o/r#1', 'b', t0);
+  assert.equal(refused.ok, false);
+  assert.ok(takePrLock('o', 'o/r#2', 'b', t0).ok, 'other PRs lock apart');
+  assert.equal(releasePrLock('o', 'o/r#1', 'b'), false, 'only the holder releases');
+  assert.ok(releasePrLock('o', 'o/r#1', 'a'));
+  assert.ok(takePrLock('o', 'o/r#1', 'b', t0).ok);
+  assert.ok(takePrLock('o', 'o/r#1', 'c', new Date(t0.getTime() + LOCK_MINUTES * 60_000)).ok, 'a dead session frees the PR');
+});
