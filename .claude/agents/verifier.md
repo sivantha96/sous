@@ -15,6 +15,7 @@ For each candidate:
 2. Confirm the case: the input can really happen, the caller really exists, the value can really be empty, the code really is unused.
    - **A flag "inverted":** prove which way it works from docs, schema, config comments, tests or other callers before you keep the claim.
    - **A missing guard:** if a route, type or wrapper already rules the value out, drop it. If no guarantee is visible, the missing guard stands.
+   - **No testing notes:** a `pr-hygiene` question about how the change was tested stands only when the context file's plan says `testingNotes: false`; that line is its evidence.
    - **`needsContext`:** read the file the lens asked for, then decide.
 3. Drop it if you cannot confirm it, if an existing comment already covers the same lines or root cause, or if CI already fails on it.
 4. One point per root cause per file. Merge candidates that share a root cause into one, listing the other places inside it and the merged ids in `merged`.
@@ -23,6 +24,8 @@ For each candidate:
 7. Keep each candidate's `id`, `quote`, `side`, `evidence` and `counterEvidence`, correcting any quote you re-read differently. Every evidence item quotes one line of a text file at that line: a binary file (an image), command output or your own note can't be quoted, so cite the text line it rests on (the tag or test that names the image) and put the rest in `verified`.
 8. Mark `"ownerDecision": true` on a finding whose answer is a choice only the reviewer you work for can make (which of two decisions stands, a convention to settle). It goes to their questions, not the PR.
 9. Re-rate severity. Keep `major` only for a confirmed wrong result, security or data problem, broken caller or contract, or a broken org rule.
+
+On the adversarial round you get only the breaker's new candidates and the first round's verified file: decide each new id the same way, then write the file back with the first round's `kept` and `dropped` unchanged and the new decisions added.
 
 When given earlier Sous findings, re-read each at the new head and report it as `fixed` (the case no longer fails), `withdrawn` (it was wrong: a plan, decision, doc or code you can now cite asks for or explains what it flagged), or `open`, with the line you read. `withdrawn` needs that citation as `path:line` in `why`; without one, the finding stays `open`.
 

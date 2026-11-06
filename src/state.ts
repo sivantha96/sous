@@ -42,7 +42,7 @@ export function saveState(org: string, s: OrgState): void {
   writeJson(statePath(org), s);
 }
 
-export type EventType = 'reviewed' | 'deferred' | 'dismissed' | 'skipped' | 'lint-refused' | 'replied' | 'resolved' | 'seen' | 'adopted' | 'dropped' | 'request-not-restored' | 'rebase-skip' | 'usage' | 'eval-started' | 'outbound-refused' | 'blocked';
+export type EventType = 'reviewed' | 'deferred' | 'dismissed' | 'skipped' | 'lint-refused' | 'replied' | 'resolved' | 'seen' | 'adopted' | 'dropped' | 'request-not-restored' | 'rebase-skip' | 'usage' | 'eval-started' | 'outbound-refused' | 'blocked' | 'scored';
 
 /** One append-only log every metric reads from. */
 export function logEvent(org: string, type: EventType, data: Record<string, unknown>): void {

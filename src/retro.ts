@@ -43,6 +43,8 @@ export function retro(events: LoggedEvent[], since: string, history = 10) {
       .filter((e) => e.type === 'reviewed' || e.type === 'adopted')
       .map((e) => (e.type === 'adopted' ? { pr: e.pr, event: 'ADOPTED', findings: typeof e.comments === 'number' ? e.comments : 0 } : { pr: e.pr, event: e.event, findings: Array.isArray(e.findings) ? e.findings.length : 0 })),
     problems: run.filter((e) => PROBLEMS.has(e.type)),
+    // What the review-judge scored 2 or lower this run: the reflector looks for the cause.
+    lowScores: run.filter((e) => e.type === 'scored' && Object.values((e.scores ?? {}) as Record<string, number>).some((v) => v <= LOW)),
     cost: usage.length
       ? { paidTokens: usage.reduce((s, u) => s + paid(u.totals), 0), cacheReadTokens: usage.reduce((s, u) => s + cacheRead(u.totals), 0), seconds: usage.reduce((s, u) => s + (u.seconds?.main ?? 0), 0), byAgent }
       : null,
@@ -78,4 +80,58 @@ export function runSummary(events: LoggedEvent[], since: string): string {
     '|---|---|---|---|---|',
     ...[...rows].map(([pr, r]) => `| ${link(pr)} | ${r.comments} | ${r.replies} | ${r.resolved} | ${r.notes.join(', ')} |`),
   ].join('\n');
+}
+
+/** What the review-judge scores each posted review on, 1 (bad) to 5 (good). */
+export const QUALITY = ['grounded', 'clear', 'actionable', 'worthIt'] as const;
+const LOW = 2;
+
+export interface ScoredReview {
+  pr: string;
+  scores: Record<(typeof QUALITY)[number], number>;
+  low: { id: string; why: string }[];
+}
+
+/** Checks the judge's file before it reaches the event log: every review, every metric, 1 to 5, and a reason for each low score. */
+export function checkScores(v: unknown): ScoredReview[] {
+  const reviews = (v as { reviews?: unknown })?.reviews;
+  if (!Array.isArray(reviews)) throw new Error('scores file needs a "reviews" list');
+  return reviews.map((r: Partial<ScoredReview>, i) => {
+    if (typeof r.pr !== 'string' || !/^[\w.-]+\/[\w.-]+#\d+$/.test(r.pr)) throw new Error(`review ${i}: "pr" must look like owner/repo#12`);
+    for (const k of QUALITY) {
+      const n = r.scores?.[k];
+      if (!Number.isInteger(n) || n! < 1 || n! > 5) throw new Error(`${r.pr}: score "${k}" must be a whole number from 1 to 5`);
+    }
+    const low = Array.isArray(r.low) ? r.low : [];
+    if (QUALITY.some((k) => r.scores![k] <= LOW) && !low.some((l) => typeof l?.why === 'string' && l.why.trim())) throw new Error(`${r.pr}: a score of ${LOW} or lower needs a "low" entry saying why`);
+    return { pr: r.pr, scores: r.scores!, low };
+  });
+}
+
+const hours = (from: string, to: string): number => Math.round(((Date.parse(to) - Date.parse(from)) / 3_600_000) * 10) / 10;
+
+/**
+ * How fast PRs move with Sous in the loop, in hours: from opening to Sous's first review, and from
+ * that review to the merge. `prs` has GitHub's times for each PR Sous reviewed.
+ */
+export function cycleTimes(events: LoggedEvent[], prs: Record<string, { createdAt: string; mergedAt: string | null }>) {
+  const first = new Map<string, string>();
+  for (const e of events) if (e.type === 'reviewed' && typeof e.pr === 'string' && !first.has(e.pr)) first.set(e.pr, e.at);
+  const toReview: number[] = [];
+  const toMerge: number[] = [];
+  for (const [pr, at] of first) {
+    const p = prs[pr];
+    if (!p) continue;
+    toReview.push(hours(p.createdAt, at));
+    if (p.mergedAt) toMerge.push(hours(at, p.mergedAt));
+  }
+  return { prs: toReview.length, merged: toMerge.length, medianHoursToFirstReview: median(toReview), medianHoursFromReviewToMerge: median(toMerge) };
+}
+
+/** The average of each quality score the review-judge gave, over the scored events given. */
+export function qualityAverages(events: LoggedEvent[]) {
+  const scored = events.filter((e) => e.type === 'scored');
+  if (!scored.length) return null;
+  const avg = (k: string) => Math.round((scored.reduce((s, e) => s + Number((e.scores as Record<string, number>)[k] ?? 0), 0) / scored.length) * 10) / 10;
+  return { reviews: scored.length, ...Object.fromEntries(QUALITY.map((k) => [k, avg(k)])) };
 }
