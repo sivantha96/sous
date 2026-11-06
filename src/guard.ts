@@ -54,8 +54,10 @@ const ENGINE_ROOT = realpathSync(resolve(dirname(fileURLToPath(import.meta.url))
 const PROTECTED = /^(src\/(guard|outbound|published|post)\.ts|src\/vendor\/.*|bin\/sous-guard|\.claude\/settings(\.local)?\.json)$/;
 
 const GIT_READ = new Set(['show', 'diff', 'log', 'ls-files', 'ls-tree', 'merge-base', 'rev-parse', 'cat-file', 'grep', 'blame', 'status', 'rev-list', 'patch-id', 'describe', 'shortlog', 'name-rev']);
-/** Git options that run programs or write files even under a read subcommand. */
-const GIT_UNSAFE = /^(-c|--config-env|--exec-path|--output|-o|--ext-diff|--textconv|--upload-pack|--receive-pack|--open-files-in-pager|-O)(=|$)/;
+/** Git's own options, before the subcommand, that set config or the program path. After it, `-c` and `-o` are harmless (`git grep -c` counts, `-o` prints only the match). */
+const GIT_GLOBAL_UNSAFE = /^(-c|--config-env|--exec-path)(=|$)/;
+/** Subcommand options that run programs or write files even under a read subcommand. */
+const GIT_UNSAFE = /^(--output|--ext-diff|--textconv|--upload-pack|--receive-pack|--open-files-in-pager)(=|$)|^-O/;
 
 const GH_READ: Record<string, string[] | true> = {
   api: true,
@@ -102,8 +104,7 @@ function checkGit(argv: string[], role: Role): Verdict {
   let i = 1;
   while (argv[i] === '-C' || argv[i] === '--no-pager' || argv[i] === '-P') i += argv[i] === '-C' ? 2 : 1;
   const sub = argv[i];
-  const flags = argv.slice(1);
-  if (flags.some((a) => GIT_UNSAFE.test(a))) return no('git options that run programs or write files are not allowed');
+  if (argv.slice(1, i + 1).some((a) => GIT_GLOBAL_UNSAFE.test(a)) || argv.slice(i + 1).some((a) => GIT_UNSAFE.test(a))) return no('git options that run programs or write files are not allowed');
   if (sub && GIT_READ.has(sub)) return { ok: true };
   // The reflector commits memory folders; engine fixes go to /learn, so it never pushes or branches.
   if (role === 'reflector' && sub && ['add', 'commit', 'revert'].includes(sub)) return { ok: true };
@@ -160,13 +161,18 @@ export function checkCommand(command: string, role: Role, cwd: string): Verdict 
     else if (name === 'gh') v = checkGh(argv, role);
     else if (name === 'sous' || argv[0] === './bin/sous' || argv[0]!.endsWith('/bin/sous')) v = checkSous(argv, role);
     else if (role === 'reflector' && name === 'mkdir') v = { ok: true };
-    else v = validateStage(argv);
+    // A system path is checked by its name (agents write `/usr/bin/grep` so no hook rewrites it);
+    // any other path, such as a script in a PR checkout, stays refused.
+    else v = validateStage(SYSTEM_BIN.test(argv[0]!) ? [name, ...argv.slice(1)] : argv);
     if (!v.ok) return v;
   }
   return { ok: true };
 }
 
-const ABSOLUTE_SOUS_RE = /(^|[\s;&|(])(?!\.\/bin\/sous(\s|$))\S*bin\/sous(\s|$)/;
+const SYSTEM_BIN = /^\/(usr\/)?bin\/[^/]+$/;
+
+// Only where a command starts: `ls bin/sous` names the file, it doesn't run it.
+const ABSOLUTE_SOUS_RE = /(^|[;&|(])\s*(?!\.\/bin\/sous(\s|$))\S*bin\/sous(\s|$)/;
 
 const CHAINED_TOKEN_RE = /(^|[\s;&|(])(gh|\.\/bin\/sous)\s[^]*[|;&]|[|;&][^]*(^|[\s;&|(])(gh|\.\/bin\/sous)\s/;
 
@@ -215,7 +221,7 @@ const BLIND = new Set(['verifier', 'writer']);
 const PR_TEXT = /\.pr-text\.md\b/;
 
 /** Added to a subagent's refused Bash call, so the next call is one that passes. */
-export const SHELL_HINT = ' (read files with the Read tool and a `limit`, search with Grep or Glob, run git as `/usr/bin/git -C <path> <subcommand>`; one plain command per call)';
+export const SHELL_HINT = ' (read files with the Read tool and a `limit`, search with `/usr/bin/grep` and `/usr/bin/find`, run git as `/usr/bin/git -C <path> <subcommand>`; one plain command per call)';
 
 export function decide(input: HookInput): Verdict {
   const role = roleOf(input.agent_type);
