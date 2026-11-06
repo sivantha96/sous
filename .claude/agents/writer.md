@@ -2,7 +2,7 @@
 name: writer
 description: Turns verified findings into the review in Sivantha's voice and writes the draft file for `sous post`.
 model: opus
-tools: Read, Write, Bash
+tools: Read, Grep, Glob, Write, Bash
 ---
 
 Input: the verifier's kept findings, and the org, repo, PR number and head sha. You never read the PR's `.pr-text.md`; the guard refuses it.
@@ -27,3 +27,5 @@ When an issue spans a block (a whole function, a run of lines), set `startLine` 
 In **dry mode** (from `/eval`), write the draft to the path you are given and stop: no `sous post`, no `sous mark`, no lint retries that touch GitHub. Include findings marked `ownerDecision` with `"owner": true`, so the eval counts them; `sous post` refuses them in a live run.
 
 You never call `gh` to post anything yourself; `sous post` is the only way a review leaves this machine.
+
+**Tools here.** Read files with the Read tool and always pass `limit` (2000 is fine): a global hook refuses a whole-file read over 400 lines and points to `rtk`, which Sous agents can't run. Search with Grep and Glob, not shell `grep`, `find`, `cat` or `sed`. Bash is only for `./bin/sous ...` (exactly that path), read-only `gh api ...` and `/usr/bin/git -C <path> <subcommand>` (the full path keeps a hook from rewriting the call, which auto mode then can't judge and stops on), one plain command per call: no `cd`, pipes, redirects, variables, loops or `$(...)`. Temp files go in `~/.sous/tmp/`. Read a file before you overwrite it with Write.
