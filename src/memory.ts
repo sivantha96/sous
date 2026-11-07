@@ -1,3 +1,4 @@
+import { findLeaks } from './leak.ts';
 /**
  * Sous's memory is plain markdown bullets in ~/.sous. One bullet is one self-contained line, so a
  * search hit makes sense on its own:
@@ -38,6 +39,9 @@ function parseCite(s: string): Cite | null {
   if (!m || !/[/.]/.test(m[2]!)) return null;
   return { ...(m[1] ? { repo: m[1] } : {}), path: m[2]!, ...(m[3] ? { sha: m[3] } : {}) };
 }
+
+/** Drops `me/` bullets that name an org, repo or person: they belong to one org, and `me/` is shared by all. */
+export const generalOnly = (bullets: Bullet[], names: string[]): Bullet[] => bullets.filter((b) => !b.file.startsWith('me/') || findLeaks(b.text, names).length === 0);
 
 export function parseBullets(file: string, content: string): Bullet[] {
   return content.split('\n').flatMap((raw, i) => {

@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { meDir, orgDir, readJson, sousHome } from './home.ts';
+import { COMMON } from './leak.ts';
 
 /**
  * The one check every text Sous sends to GitHub goes through: review comments, replies and
@@ -18,18 +19,27 @@ const CANARY_PREFIX = 'sous-canary-';
 const CANARY_LINE = /<!-- sous-canary-[0-9a-f]{16} -->/;
 const URL_RE = /\bhttps?:\/\/[^\s)<>\]"'`]+/g;
 
-/** Names of every org except `org`, with their parts and denylists. */
+/** Every name that marks an org: its name and parts, its repos (reviewed or cloned), its link hosts and its denylist. */
+export function orgNames(org: string, home = sousHome()): string[] {
+  const dir = join(home, 'orgs', org);
+  const names = new Set([org, ...org.split('-'), ...readJson<string[]>(join(dir, 'denylist.json'), [])]);
+  for (const key of Object.keys(readJson<{ prs?: Record<string, unknown> }>(join(dir, 'state.json'), {}).prs ?? {})) names.add(key.split('#')[0]!.split('/')[1]!);
+  const cache = join(home, 'cache', org);
+  for (const repo of existsSync(cache) ? readdirSync(cache) : []) names.add(repo);
+  for (const host of readJson<{ linkHosts?: string[] }>(join(dir, 'profile.json'), {}).linkHosts ?? []) names.add(host);
+  return [...names].filter(Boolean);
+}
+
+/**
+ * Names of every org except `org`. A name both orgs use is not a leak, and an everyday word
+ * (`core`, `api`) can't mark an org: refusing it would block every comment.
+ */
 export function otherOrgTerms(org: string, home = sousHome()): string[] {
   const dir = join(home, 'orgs');
+  const own = new Set(orgNames(org, home).map((t) => t.toLowerCase()));
   const terms = new Set<string>();
-  for (const other of existsSync(dir) ? readdirSync(dir) : []) {
-    if (other === org) continue;
-    terms.add(other);
-    for (const part of other.split('-')) terms.add(part);
-    for (const t of readJson<string[]>(join(dir, other, 'denylist.json'), [])) terms.add(t);
-  }
-  const own = new Set([org, ...org.split('-'), ...readJson<string[]>(join(dir, org, 'denylist.json'), [])].map((t) => t.toLowerCase()));
-  return [...terms].filter((t) => t.length >= 4 && !own.has(t.toLowerCase()));
+  for (const other of existsSync(dir) ? readdirSync(dir) : []) if (other !== org) for (const t of orgNames(other, home)) terms.add(t);
+  return [...terms].filter((t) => t.length >= 4 && !COMMON.has(t.toLowerCase()) && !own.has(t.toLowerCase()));
 }
 
 const escape = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

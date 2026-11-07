@@ -3,6 +3,9 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 // All learned memory lives here, never in this repo. SOUS_HOME overrides it (tests use a temp dir).
+/** The org a session is reviewing, so the guard can keep every other org out of reach. */
+export const focusPath = (session: string): string => join(sousHome(), 'sessions', `${session.replace(/[^\w-]/g, '')}.json`);
+
 export const sousHome = (): string => process.env.SOUS_HOME ?? join(homedir(), '.sous');
 export const meDir = (): string => join(sousHome(), 'me');
 export const orgDir = (org: string): string => {

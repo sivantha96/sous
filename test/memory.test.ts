@@ -58,3 +58,9 @@ test('candidates and teammate bullets rank below the lead rules at equal score',
   const hits = searchMemory([...cand, ...rules], ['src/a.ts'], []);
   assert.deepEqual(hits.map((h) => h.bullet.trust), ['lead', 'candidate']);
 });
+
+test('a shared habit that names an org or repo never loads; general ones do', async () => {
+  const { generalOnly, parseBullets } = await import('../src/memory.ts');
+  const bullets = [...parseBullets('me/habits.md', '- test the failing case first\n- use the payments-hub retry helper\n'), ...parseBullets('rules/seed.md', '- [scope: all] payments-hub owns retries\n')];
+  assert.deepEqual(generalOnly(bullets, ['payments-hub']).map((b) => b.file + ':' + b.line), ['me/habits.md:1', 'rules/seed.md:1']);
+});

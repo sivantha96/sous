@@ -1,8 +1,8 @@
-import { realpathSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { dirname, relative, resolve, sep } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { sousHome } from './home.ts';
+import { focusPath, sousHome } from './home.ts';
 import { parseCommandLine, validateStage } from './vendor/shell-policy.ts';
 
 /**
@@ -204,6 +204,7 @@ export function checkWrite(path: string | undefined, role: Role, cwd: string, en
     return no(`${relative(ENGINE_ROOT, abs)} is one of Sous's own guard rails; edit it in a session started with SOUS_ENGINE_EDIT=1`);
   }
   if (role === 'main') return { ok: true };
+  if (inside(abs, realOf(join(sousHome(), 'sessions')))) return no('only the main session sets which org a session reviews');
   return [realOf(sousHome()), realOf(tmpdir())].some((d) => inside(abs, d)) ? { ok: true } : no('subagents write only under ~/.sous (temp files in ~/.sous/tmp)');
 }
 
@@ -212,6 +213,34 @@ export interface HookInput {
   tool_input: { command?: string; file_path?: string; notebook_path?: string; path?: string; pattern?: string; glob?: string };
   agent_type?: string;
   cwd?: string;
+  session_id?: string;
+}
+
+/**
+ * While a session reviews one org (`sous focus`), nothing in it, its subagents included, may read,
+ * write or query another org: its memory, its clones, or its repos on GitHub. Subagents share the
+ * session id. With no focus (setup, a session that isn't reviewing) this check is off.
+ */
+export function checkFocus(input: HookInput, home = sousHome()): Verdict {
+  if (!input.session_id) return { ok: true };
+  let focus: string | undefined;
+  try {
+    focus = (JSON.parse(readFileSync(focusPath(input.session_id), 'utf8')) as { org?: string }).org;
+  } catch {
+    return { ok: true };
+  }
+  if (!focus) return { ok: true };
+  const orgsDir = join(home, 'orgs');
+  const others = (existsSync(orgsDir) ? readdirSync(orgsDir) : []).filter((o) => o !== focus);
+  const { command, file_path, notebook_path, path, pattern, glob } = input.tool_input;
+  const text = [command, file_path, notebook_path, path, pattern, glob].filter(Boolean).join('\n').replace(/~\//g, `${homedir()}/`);
+  for (const other of others) {
+    const esc = other.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Its memory and clones by path, and its repos on GitHub (`repos/<org>/`, `<org>/<repo>`, `github.com/<org>/`).
+    const hits = [join(home, 'orgs', other), join(home, 'cache', other)].some((p) => text.includes(p)) || new RegExp(`(^|[\\s/'"=:])${esc}/`, 'i').test(text);
+    if (hits) return no(`this session is reviewing ${focus}; another org's memory, code and repos are out of reach`);
+  }
+  return { ok: true };
 }
 
 /**
@@ -225,6 +254,8 @@ const PR_TEXT = /\.pr-text\.md\b/;
 export const SHELL_HINT = ' (read files with the Read tool and a `limit`, search with `/usr/bin/grep` and `/usr/bin/find`, run git as `/usr/bin/git -C <path> <subcommand>`; one plain command per call)';
 
 export function decide(input: HookInput): Verdict {
+  const focus = checkFocus(input);
+  if (!focus.ok) return focus;
   const role = roleOf(input.agent_type);
   const cwd = input.cwd ?? process.cwd();
   // Only what is read or run: a file's content may name the PR-text file without reading it.
