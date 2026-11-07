@@ -1,11 +1,17 @@
 import { existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { claudeHome } from './home.ts';
 
 /**
  * Token use per subagent, read from Claude Code's own transcripts: Sous runs on a subscription, so
  * there's no API bill to read. Each subagent writes `subagents/agent-<id>.jsonl` (one usage block per
  * model reply) beside `agent-<id>.meta.json` (its type and description).
  */
+/** Where Claude Code keeps the session transcripts of one folder. */
+export function projectsDir(cwd: string, root = claudeHome()): string {
+  return join(root, 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'));
+}
+
 export interface Usage {
   input: number;
   output: number;

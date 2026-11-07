@@ -7,6 +7,11 @@ import { dirname, join } from 'node:path';
 export const focusPath = (session: string): string => join(sousHome(), 'sessions', `${session.replace(/[^\w-]/g, '')}.json`);
 
 export const sousHome = (): string => process.env.SOUS_HOME ?? join(homedir(), '.sous');
+/**
+ * Claude Code's user config dir: transcripts, skills and the plugin cache. CLAUDE_CONFIG_DIR moves
+ * all of it (a second install keeps it at ~/.claude-<name>); an empty value counts as unset.
+ */
+export const claudeHome = (env: NodeJS.ProcessEnv = process.env, home = homedir()): string => env.CLAUDE_CONFIG_DIR || join(home, '.claude');
 export const meDir = (): string => join(sousHome(), 'me');
 export const orgDir = (org: string): string => {
   if (!/^[A-Za-z0-9][A-Za-z0-9-]*$/.test(org)) throw new Error(`not a GitHub org name: ${org}`);

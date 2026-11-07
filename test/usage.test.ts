@@ -28,3 +28,8 @@ test('an agent ran from its first to its last timestamp; lines without one are s
   assert.equal(spanSeconds([at('2026-11-05T10:00:00Z'), '{"type":"session-owner"}', 'not json', at('2026-11-05T10:02:30Z')].join('\n')), 150);
   assert.equal(spanSeconds(at('2026-11-05T10:00:00Z')), 0);
 });
+
+test('transcripts sit under the config dir, one folder per working directory', async () => {
+  const { projectsDir } = await import('../src/usage.ts');
+  assert.equal(projectsDir('/h/me/sous', '/h/me/.claude-work'), '/h/me/.claude-work/projects/-h-me-sous');
+});
