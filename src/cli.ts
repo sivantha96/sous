@@ -25,7 +25,7 @@ import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { diffTerms, factState, generalOnly, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
-import { askByHand, askedByHand, askedYou, emptyPr, loadState, logEvent, prKey, readEvents, releaseLock, releasePrLock, saveState, takeLock, takePrLock, type LoggedEvent } from './state.ts';
+import { askByHand, askedByHand, askedYou, emptyPr, keyIn, loadState, logEvent, prKey, readEvents, releaseLock, releasePrLock, saveState, takeLock, takePrLock, watchedOrg, type LoggedEvent } from './state.ts';
 
 const run = promisify(execFile);
 
@@ -144,7 +144,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     await refreshDenylist(org, account);
     await baseline(org, account);
     const config = loadConfig();
-    if (!config.orgs.includes(org)) saveConfig({ ...config, orgs: [...config.orgs, org] });
+    if (!watchedOrg(config.orgs, org)) saveConfig({ ...config, orgs: [...config.orgs, org] });
     await gitInit(dir);
     await commitMemory(dir, `org add ${org}`);
     print(loadProfile(org));
@@ -205,8 +205,9 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   async ask(args) {
     const [org, repo, n] = args;
     if (!org || !repo || !n) throw new Error('usage: sous ask <org> <owner/repo> <number>');
-    if (!loadConfig().orgs.includes(org) || !repo.toLowerCase().startsWith(`${org.toLowerCase()}/`)) throw new Error(`${repo} is not in a watched org`);
-    askByHand(org, prKey(repo, Number(n)));
+    const watched = watchedOrg(loadConfig().orgs, org);
+    if (!watched || !repo.toLowerCase().startsWith(`${watched.toLowerCase()}/`)) throw new Error(`${repo} is not in a watched org`);
+    askByHand(watched, prKey(repo, Number(n)));
     print({ asked: prKey(repo, Number(n)) });
     return 0;
   },
@@ -243,9 +244,10 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
     const [org, session] = positionals;
     if (!org || !session) throw new Error('usage: sous focus <org> <session id> | sous focus --clear <session id>');
-    if (!loadConfig().orgs.includes(org)) throw new Error(`${org} is not an org Sous watches`);
-    writeJson(focusPath(session), { org, at: new Date().toISOString() });
-    print({ session, focus: org });
+    const watched = watchedOrg(loadConfig().orgs, org);
+    if (!watched) throw new Error(`${org} is not an org Sous watches`);
+    writeJson(focusPath(session), { org: watched, at: new Date().toISOString() });
+    print({ session, focus: watched });
     return 0;
   },
 
@@ -399,8 +401,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const pending = isPaused(config, draft.org) || profile.postingMode === 'draft';
     const gh = await ghFor(profile.ghAccount);
     const me = await whoami(gh);
-    const key = prKey(draft.repo, draft.number);
     const state = loadState(draft.org);
+    const key = keyIn(state, prKey(draft.repo, draft.number));
     const prev = state.prs[key] ?? emptyPr(draft.head);
 
     // A post whose response was lost already exists on this head: adopt it instead of posting twice.
@@ -418,7 +420,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const files = await getAll<{ filename: string; patch?: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/files?per_page=100`);
     const pull = await get<{ base: { ref: string }; state: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
     // The recipient is fixed by code, never by the draft: a watched org, an open PR, and one Sous already reviewed, Sivantha asked for by hand, or that asks for Sivantha's review by name or through a team.
-    if (!config.orgs.includes(draft.org) || !draft.repo.toLowerCase().startsWith(`${draft.org.toLowerCase()}/`)) throw new Error(`${draft.repo} is not in a watched org; not posting`);
+    if (!watchedOrg(config.orgs, draft.org) || !draft.repo.toLowerCase().startsWith(`${draft.org.toLowerCase()}/`)) throw new Error(`${draft.repo} is not in a watched org; not posting`);
     if (pull.state !== 'open') throw new Error(`${key} is ${pull.state}; not posting`);
     const asked = async () =>
       askedYou(await get<{ users: { login: string }[]; teams: { slug: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`), me, draft.org, await getAll<{ slug: string; organization: { login: string } }>(gh, 'user/teams?per_page=100'));
@@ -501,7 +503,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (!Array.isArray(v.kept) || !Array.isArray(v.dropped)) throw new Error('the verifier output has no kept and dropped lists; not marking the head as reviewed');
     if (v.kept.some((k) => !k.ownerDecision)) throw new Error('the verifier kept findings; post them instead of marking');
     const state = loadState(org);
-    const key = prKey(repo, Number(n));
+    const key = keyIn(state, prKey(repo, Number(n)));
     state.prs[key] = { ...(state.prs[key] ?? emptyPr(head)), head, reviewedAt: new Date().toISOString() };
     saveState(org, state);
     logEvent(org, 'reviewed', { pr: key, head, event: 'NONE', findings: [], droppedByVerifier: v.dropped.length });
@@ -532,7 +534,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const config = loadConfig();
     const profile = loadProfile(org);
     const state = loadState(org);
-    const key = prKey(repo, Number(n));
+    const key = keyIn(state, prKey(repo, Number(n)));
     const pr = state.prs[key];
     assertOwnThread(pr, Number(id));
     const text = readFileSync(file, 'utf8').trim();
@@ -558,8 +560,9 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const [org, repo, n, id] = args;
     if (!org || !repo || !n || !id) throw new Error('usage: sous resolve <org> <owner/repo> <number> <sous-comment-id>');
     const profile = loadProfile(org);
-    const key = prKey(repo, Number(n));
-    assertOwnThread(loadState(org).prs[key], Number(id));
+    const state = loadState(org);
+    const key = keyIn(state, prKey(repo, Number(n)));
+    assertOwnThread(state.prs[key], Number(id));
     const gh = await ghFor(profile.ghAccount);
     const thread = await threadIdFor(gh, repo, Number(n), Number(id));
     if (!thread) throw new Error(`no review thread starts with comment ${id}`);
@@ -578,7 +581,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (!org || !repo || !n) throw new Error('usage: sous seen <org> <owner/repo> <number> [--replies id,id]');
     const profile = loadProfile(org);
     const state = loadState(org);
-    const key = prKey(repo, Number(n));
+    const key = keyIn(state, prKey(repo, Number(n)));
     const pr = state.prs[key];
     if (!pr) throw new Error(`${key} is not in state`);
     const ids = (values.replies ?? '').split(',').filter(Boolean).map(Number);
@@ -599,7 +602,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const [org, repo, n] = args;
     if (!org || !repo || !n) throw new Error('usage: sous status <org> <owner/repo> <number>');
     const profile = loadProfile(org);
-    const pr = loadState(org).prs[prKey(repo, Number(n))];
+    const state = loadState(org);
+    const pr = state.prs[keyIn(state, prKey(repo, Number(n)))];
     if (!pr) throw new Error('not in state');
     const gh = await ghFor(profile.ghAccount);
     const reviews = await getAll<{ id: number; state: string; commit_id: string }>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`);
@@ -621,10 +625,12 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (!org || !repo || !n || !id || message.length === 0) throw new Error('usage: sous dismiss <org> <owner/repo> <number> <review-id> <message>');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
-    guardOutbound(org, profile, prKey(repo, Number(n)), [message.join(' ')]);
-    const own = loadState(org).prs[prKey(repo, Number(n))]?.reviewIds ?? [];
+    const state = loadState(org);
+    const key = keyIn(state, prKey(repo, Number(n)));
+    guardOutbound(org, profile, key, [message.join(' ')]);
+    const own = state.prs[key]?.reviewIds ?? [];
     await dismissOwn(gh, repo, Number(n), Number(id), await whoami(gh), own, message.join(' '));
-    logEvent(org, 'dismissed', { pr: prKey(repo, Number(n)), reviewId: Number(id) });
+    logEvent(org, 'dismissed', { pr: key, reviewId: Number(id) });
     print({ dismissed: Number(id) });
     return 0;
   },

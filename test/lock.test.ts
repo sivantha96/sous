@@ -30,6 +30,19 @@ test('a PR asks for your review by name or through a team you are in, in its own
   askByHand('acme', 'acme/r#1');
   askByHand('acme', 'acme/r#1');
   assert.ok(askedByHand('acme', 'acme/r#1'));
+  assert.ok(askedByHand('acme', 'Acme/r#1'), 'GitHub names ignore case, so a hand review does too');
+});
+
+test('a PR named in another case is the same PR: one lock, one state record, one watched org', async () => {
+  const { keyIn, takePrLock, watchedOrg } = await import('../src/state.ts');
+  const t0 = new Date('2026-11-05T10:00:00Z');
+  assert.ok(takePrLock('o', 'Acme/web#1', 'a', t0).ok);
+  assert.equal(takePrLock('o', 'acme/web#1', 'b', t0).ok, false);
+  const state = { prs: { 'Acme/web#1': { head: 'h', reviewedAt: '', reviewIds: [], commentIds: [], replyIds: [], handled: [], reactions: {} } } };
+  assert.equal(keyIn(state, 'acme/web#1'), 'Acme/web#1');
+  assert.equal(keyIn(state, 'acme/web#2'), 'acme/web#2', 'a PR not yet recorded keeps the given key');
+  assert.equal(watchedOrg(['acme-inc'], 'Acme-Inc'), 'acme-inc');
+  assert.equal(watchedOrg(['acme-inc'], 'other'), undefined);
 });
 
 test('one review per PR: a second session is refused until the first releases or its lock expires', async () => {
