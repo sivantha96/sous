@@ -29,6 +29,15 @@ export interface OrgState {
 
 export const prKey = (repo: string, n: number): string => `${repo}#${n}`;
 
+/** GitHub owner and repo names ignore case, so Sous's lookups by name do too. */
+export const sameName = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+
+/** The key a PR is already recorded under, in whatever case it was first written; else `key` itself. */
+export const keyIn = (state: OrgState, key: string): string => (state.prs[key] ? key : (Object.keys(state.prs).find((k) => sameName(k, key)) ?? key));
+
+/** The watched org's name as config spells it, or undefined when `org` isn't watched in any case. */
+export const watchedOrg = (orgs: string[], org: string): string | undefined => orgs.find((o) => sameName(o, org));
+
 const statePath = (org: string): string => join(orgDir(org), 'state.json');
 
 function readState(org: string): OrgState {
@@ -143,7 +152,8 @@ export function releaseLock(org: string, session: string): boolean {
   return true;
 }
 
-const prLockPath = (org: string, key: string): string => join(orgDir(org), 'locks', `${key.replace(/[^\w.-]+/g, '-')}.lock`);
+// Lowercased, so two sessions naming one PR in different case share a lock on case-sensitive filesystems too.
+const prLockPath = (org: string, key: string): string => join(orgDir(org), 'locks', `${key.toLowerCase().replace(/[^\w.-]+/g, '-')}.lock`);
 
 /**
  * One Sous review of a PR at a time. Two sessions on one PR post the same points twice and race on
@@ -179,10 +189,10 @@ export function releasePrLock(org: string, key: string, session: string): boolea
  * was asked, and a hand review counts. Only the main session can add one: no subagent may run `sous ask`.
  */
 const askedPath = (org: string): string => join(orgDir(org), 'asked.json');
-export const askedByHand = (org: string, key: string): boolean => readJson<string[]>(askedPath(org), []).includes(key);
+export const askedByHand = (org: string, key: string): boolean => readJson<string[]>(askedPath(org), []).some((k) => sameName(k, key));
 export function askByHand(org: string, key: string): void {
   const keys = readJson<string[]>(askedPath(org), []);
-  if (!keys.includes(key)) writeJson(askedPath(org), [...keys, key]);
+  if (!keys.some((k) => sameName(k, key))) writeJson(askedPath(org), [...keys, key]);
 }
 
 /** Asked for your review: by name, or through a team you are in, in the PR's own org. */
