@@ -1,5 +1,5 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config, type Profile } from './config.ts';
@@ -10,7 +10,7 @@ import { findSkill } from './skills.ts';
 import { findDue, patchId } from './due.ts';
 import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
 import { get, getAll, ghFor, send, whoami } from './gh.ts';
-import { appendLine, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
+import { appendLine, focusPath, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
 import { buildDenylist, findLeaks } from './leak.ts';
 import { applyCorrections, isDuplicate, missingDecisions, verifyEvidence, type Correction } from './evidence.ts';
 import { buildReview, dismissOwn, hasMarker, LintError, marker, postReview, signed, type Draft } from './post.ts';
@@ -23,7 +23,7 @@ import { checkScores, cycleTimes, qualityAverages, retro, runSummary, unscored }
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { diffTerms, factState, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
+import { diffTerms, factState, generalOnly, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
 import { askByHand, askedByHand, askedYou, emptyPr, loadState, logEvent, prKey, readEvents, releaseLock, releasePrLock, saveState, takeLock, takePrLock, type LoggedEvent } from './state.ts';
 
@@ -96,7 +96,9 @@ function memoryBullets(org: string): Bullet[] {
       for (const f of readdirSync(d).filter((x) => x.endsWith('.md'))) out.push(...parseBullets(`${label === 'me' ? 'me' : sub}/${f}`, readFileSync(join(d, f), 'utf8')));
     }
   }
-  return out;
+  // `me/` is shared by every org, so it holds only general practice. A bullet there that names an
+  // org, a repo or a person belongs to one org and never reaches a review, whichever org it is.
+  return generalOnly(out, buildDenylist());
 }
 
 const commands: Record<string, (args: string[]) => Promise<number>> = {
@@ -226,6 +228,24 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (!org || !repo || !n || !session) throw new Error('usage: sous pr-unlock <org> <owner/repo> <number> <session id>');
     const key = prKey(repo, Number(n));
     print({ pr: key, released: releasePrLock(org, key, session) });
+    return 0;
+  },
+
+  /** Points the guard at the one org this session reviews; `--clear` lifts it. */
+  async focus(args) {
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { clear: { type: 'boolean' } } });
+    if (values.clear) {
+      const [session] = positionals;
+      if (!session) throw new Error('usage: sous focus --clear <session id>');
+      rmSync(focusPath(session), { force: true });
+      print({ session, focus: null });
+      return 0;
+    }
+    const [org, session] = positionals;
+    if (!org || !session) throw new Error('usage: sous focus <org> <session id> | sous focus --clear <session id>');
+    if (!loadConfig().orgs.includes(org)) throw new Error(`${org} is not an org Sous watches`);
+    writeJson(focusPath(session), { org, at: new Date().toISOString() });
+    print({ session, focus: org });
     return 0;
   },
 

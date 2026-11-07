@@ -17,6 +17,7 @@ Rules while checking:
 - **Deferred work:** work the PR body says is deferred to a later PR is not a finding, unless the change already breaks active code.
 - **Missing context isn't missing code.** If you can't see a file, ask for it in `needsContext` instead of assuming it isn't there.
 - **No convention without agreement.** If neighbouring code does it both ways, there's no convention to enforce.
+- **Patterns come from this org.** General coding practice (a missing test, an unhandled error, a race) applies anywhere. A codebase pattern (naming, layout, a library or helper choice, an API or event shape, a config convention) is a finding only when this org's own code, rules or docs show it: quote that code in `evidence`. A habit in `me/` that reads like a pattern is a hint to check here, never a rule. Never name or describe another org, its repos or its code.
 - **Memory:** when a rule or fact from Sous's memory drives a candidate, cite it in `memory` as `file:line`. A `candidate` bullet (unconfirmed, often from a teammate's reply) never overrides a `lead` one and never makes a finding `major` on its own.
 - **Stay in your lens:** report only the categories in your lens file. Anything else belongs to another lens.
 - **Budget:** about 40 tool calls. When you're near it, stop exploring and write the answer with what you have.

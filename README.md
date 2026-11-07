@@ -61,6 +61,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 | `sous retro` | The last run for the learning round: its reviews, problems (refusals, skips, blocks, deferrals), low review scores, paid tokens and minutes, next to the median of the 10 runs before it. `--session` and `--pr` keep it to one session when several run at once. No model tokens |
 | `sous summary` | The run's last message: one row per PR it touched, linked, with the comments, replies and resolved threads Sous posted. No model tokens |
 | `sous pr-lock` / `pr-unlock` | One Sous review of a PR at a time: a run skips a PR a hand `/review` holds, and the other way round. Expires after 90 minutes |
+| `sous focus <org> <session>` / `--clear` | Points the guard at the one org a session reviews: nothing in it, subagents included, may read, write or query another org's memory, clones or repos |
 | `sous quality` | Logs the review-judge's scores after checking each one is there and from 1 to 5. No model tokens |
 | `sous stagekey` | Cache key for one eval stage (same head, prompts and memory, same key), so reruns reuse it |
 | `sous stats` | Reviews, findings, refusals, drops, replies, average review scores, cycle time (opening to first review, review to merge) and tokens; `/stats` answers questions from it |

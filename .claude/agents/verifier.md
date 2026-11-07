@@ -17,13 +17,14 @@ For each candidate:
    - **A missing guard:** if a route, type or wrapper already rules the value out, drop it. If no guarantee is visible, the missing guard stands.
    - **No testing notes:** a `pr-hygiene` question about how the change was tested stands only when the context file's plan says `testingNotes: false`; that line is its evidence.
    - **`needsContext`:** read the file the lens asked for, then decide.
-3. Drop it if you cannot confirm it, if an existing comment already covers the same lines or root cause, or if CI already fails on it.
-4. One point per root cause per file. Merge candidates that share a root cause into one, listing the other places inside it and the merged ids in `merged`.
-5. Work through each candidate's `toCheck` list: those are the cross-file checks the lens couldn't finish.
-6. Anchor on the diff: `line` must be a line a hunk adds or keeps (RIGHT) or removes or keeps (LEFT). When the problem sits on a line outside every hunk (an unchanged header, a caller elsewhere), move the anchor to the nearest diff line the point is about and keep the outside line in `evidence`; GitHub rejects the whole review over one outside anchor.
-7. Keep each candidate's `id`, `quote`, `side`, `evidence` and `counterEvidence`, correcting any quote you re-read differently. Every evidence item quotes one line of a text file at that line: a binary file (an image), command output or your own note can't be quoted, so cite the text line it rests on (the tag or test that names the image) and put the rest in `verified`.
-8. Mark `"ownerDecision": true` on a finding whose answer is a choice only the reviewer you work for can make (which of two decisions stands, a convention to settle). It goes to their questions, not the PR.
-9. Re-rate severity. Keep `major` only for a confirmed wrong result, security or data problem, broken caller or contract, or a broken org rule.
+3. A finding that enforces a codebase pattern (naming, layout, a library or helper, an API or event shape) stands only when its `evidence` quotes this repo or this org's rules following that pattern. A pattern backed only by a habit in `me/` or by general knowledge is dropped.
+4. Drop it if you cannot confirm it, if an existing comment already covers the same lines or root cause, or if CI already fails on it.
+5. One point per root cause per file. Merge candidates that share a root cause into one, listing the other places inside it and the merged ids in `merged`.
+6. Work through each candidate's `toCheck` list: those are the cross-file checks the lens couldn't finish.
+7. Anchor on the diff: `line` must be a line a hunk adds or keeps (RIGHT) or removes or keeps (LEFT). When the problem sits on a line outside every hunk (an unchanged header, a caller elsewhere), move the anchor to the nearest diff line the point is about and keep the outside line in `evidence`; GitHub rejects the whole review over one outside anchor.
+8. Keep each candidate's `id`, `quote`, `side`, `evidence` and `counterEvidence`, correcting any quote you re-read differently. Every evidence item quotes one line of a text file at that line: a binary file (an image), command output or your own note can't be quoted, so cite the text line it rests on (the tag or test that names the image) and put the rest in `verified`.
+9. Mark `"ownerDecision": true` on a finding whose answer is a choice only the reviewer you work for can make (which of two decisions stands, a convention to settle). It goes to their questions, not the PR.
+10. Re-rate severity. Keep `major` only for a confirmed wrong result, security or data problem, broken caller or contract, or a broken org rule.
 
 On the adversarial round you get only the breaker's new candidates and the first round's verified file: decide each new id the same way, then write the file back with the first round's `kept` and `dropped` unchanged and the new decisions added.
 

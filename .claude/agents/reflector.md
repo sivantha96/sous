@@ -30,6 +30,7 @@ Scope, source and cite are optional; system facts always cite the file that prov
 - A rule Sivantha deleted Sous's comments for twice is removed. A rule with no hits in 90 days (`./bin/sous memory hits <org>`; a hit is a posted finding that cited it) is removed.
 - Run `./bin/sous facts <org>`: a `stale` fact (its file changed since the pinned commit) is re-read and rewritten or removed; `./bin/sous facts <org> --retire` removes facts whose files are gone.
 - Lessons about Sivantha's voice or habits go to `~/.sous/me/` with no code, repo, product or people names. Run `./bin/sous leak-check --me`; it must pass.
+- `me/` is shared by every org Sous watches, so it holds only practice that holds in any codebase (test the failing case, handle the error, keep a change to its stated goal). A pattern seen in this org's code (a helper to use, a folder layout, a naming or API convention) goes to this org's `rules/` or `system/`, never `me/`. Another org learns the same pattern only from its own code. A `me/` bullet that names an org, repo or person is dropped when memory loads.
 - Commit each memory folder: `git -C <folder> add -A && git -C <folder> commit -m "<what was learned, from which PR>"`.
 
 **The replay gate.** A change to `rules/` or to a prompt only takes effect if the replay does not get worse:
