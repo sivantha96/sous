@@ -45,7 +45,7 @@ export class LintError extends Error {
 
 export function buildReview(
   d: Draft,
-  opts: { pending: boolean; attribution: string; files: { filename: string; patch?: string }[]; suggestions?: boolean },
+  opts: { pending: boolean; attribution: string; files: { filename: string; patch?: string }[]; suggestions?: boolean; ownPr?: boolean },
 ): ReviewPayload {
   const problems = d.findings.flatMap((f) => lintFinding(f).map((p) => `${f.path}:${f.line}: ${p}`));
   if (!opts.suggestions) for (const f of d.findings.filter((f) => f.severity === 'suggestion')) problems.push(`${f.path}:${f.line}: suggestions are off for this org; leave them out (they still count in evals)`);
@@ -76,7 +76,8 @@ export function buildReview(
       body: signed(render(f), opts.attribution, d.head),
     })),
   };
-  if (!opts.pending) payload.event = d.findings.some((f) => f.severity === 'major') ? 'REQUEST_CHANGES' : 'COMMENT';
+  // GitHub refuses REQUEST_CHANGES on your own PR, and Sous posts as you.
+  if (!opts.pending) payload.event = !opts.ownPr && d.findings.some((f) => f.severity === 'major') ? 'REQUEST_CHANGES' : 'COMMENT';
   return payload;
 }
 

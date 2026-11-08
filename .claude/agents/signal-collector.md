@@ -11,7 +11,7 @@ Run each `gh api` call on its own, with no pipe or chain, so it leaves the sandb
 
 For each PR in state with a `reviewedAt`, collect since that time, by reading with `gh api`:
 
-1. Sivantha's own comments and reviews on the PR (no `<!-- sous:` marker), including "Owner decisions" comments.
+1. Sivantha's own comments and reviews on the PR (no `<!-- sous:` marker), including "Owner decisions" comments. On a PR Sivantha authored, mark their replies to Sous `"author": true`: they are the author defending or explaining the change, not a reviewer's decision.
 2. Edits or deletions of Sous comments (a Sous comment id from state that is gone or whose body changed).
 3. Replies and reactions on Sous comments, with author.
 4. Whether each Sous finding's lines changed in a later commit, and whether the PR merged.

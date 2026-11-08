@@ -6,13 +6,14 @@ import type { Gh } from '../src/gh.ts';
 const head = 'a'.repeat(40);
 const draft = (findings: Draft['findings']): Draft => ({ org: 'o', repo: 'o/r', number: 1, head, findings });
 const files = [{ filename: 'src/a.ts', patch: '@@ -1,2 +1,10 @@\n a\n+b\n+c\n+d\n+e\n+f\n+g\n+h\n+i\n+j' }];
-const buildReview = (d: Draft, o: { pending: boolean }) => build(d, { ...o, attribution: "From Sam's AI reviewer", files });
+const buildReview = (d: Draft, o: { pending: boolean; ownPr?: boolean }) => build(d, { ...o, attribution: "From Sam's AI reviewer", files });
 const major = { severity: 'major' as const, path: 'src/a.ts', line: 3, body: 'this throws on an empty list', fix: 'return early when the list is empty' };
 const nit = { severity: 'nit' as const, path: 'src/a.ts', line: 9, body: 'rename to `count`' };
 
 test('any major requests changes; minors and nits only comment', () => {
   assert.equal(buildReview(draft([major, nit]), { pending: false }).event, 'REQUEST_CHANGES');
   assert.equal(buildReview(draft([nit]), { pending: false }).event, 'COMMENT');
+  assert.equal(buildReview(draft([major]), { pending: false, ownPr: true }).event, 'COMMENT', 'GitHub refuses request-changes on your own PR');
 });
 
 test('paused or draft mode leaves the review pending', () => {

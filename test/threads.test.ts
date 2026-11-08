@@ -53,3 +53,12 @@ test('Sous has the last word when its marked reply is last, even if state lost t
   const pr = { ...emptyPr('h'), commentIds: [1] };
   assert.equal(sousHasLastWord([c(1, 'me'), c(2, 'dev', { in_reply_to_id: 1 }), c(3, 'me', { in_reply_to_id: 1, body: 'ok\n\n<!-- sous:abc123 -->' })], pr, 1), true);
 });
+
+test('on your own PR your replies are the author answers; elsewhere they are yours, not signals', () => {
+  const pr = { ...emptyPr('h'), commentIds: [1], replyIds: [4] };
+  const comments = [c(1, 'me'), c(2, 'me', { in_reply_to_id: 1 }), c(3, 'dev', { in_reply_to_id: 1 })];
+  assert.deepEqual(threadSignals(comments, pr, 'me')[0]!.replies.map((r) => r.id), [3]);
+  assert.deepEqual(threadSignals(comments, pr, 'me', true)[0]!.replies.map((r) => r.id), [2, 3]);
+  const sousReply = [c(1, 'me'), c(2, 'me', { in_reply_to_id: 1 }), c(4, 'me', { in_reply_to_id: 1 })];
+  assert.deepEqual(threadSignals(sousReply, pr, 'me', true), [], 'a Sous reply after it answers it, and is never a signal itself');
+});
