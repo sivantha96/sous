@@ -18,11 +18,10 @@ import { commitAt, gateFails, lensRecall, meanTotals, parseAiReview, scoreCase, 
 import { assertOwnThread, reviewThreads, sousHasLastWord, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
 import { codeLinks, plan } from './plan.ts';
-import { mergeUsage, spanSeconds, subagentLogs, usageByModel, type Usage } from './usage.ts';
+import { mergeUsage, projectsDir, spanSeconds, subagentLogs, usageByModel, type Usage } from './usage.ts';
 import { checkScores, cycleTimes, qualityAverages, retro, runSummary, unscored } from './retro.ts';
 import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { diffTerms, factState, generalOnly, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
 import { askByHand, askedByHand, askedYou, emptyPr, keyIn, loadState, logEvent, prKey, readEvents, releaseLock, releasePrLock, saveState, takeLock, takePrLock, watchedOrg, type LoggedEvent } from './state.ts';
@@ -882,7 +881,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
    */
   async tokens(args) {
     const { values } = parseArgs({ args, options: { session: { type: 'string' }, org: { type: 'string' }, label: { type: 'string' }, cwd: { type: 'string' } } });
-    const projects = join(homedir(), '.claude', 'projects', (values.cwd ?? process.cwd()).replace(/[^A-Za-z0-9]/g, '-'));
+    const projects = projectsDir(values.cwd ?? process.cwd());
     if (!existsSync(projects)) throw new Error(`no Claude Code transcripts at ${projects}`);
     const session =
       values.session ??
