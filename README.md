@@ -22,7 +22,7 @@ Only the engine lives here. Everything Sous learns lives in `~/.sous` on your ma
 
 ## Schedules and hand reviews
 
-- **One schedule per org.** `/run <org>` reviews only that org's PRs that request your review, so each org gets its own task and interval. `/run` with no org covers every org in one task.
+- **One schedule per org.** `/run <org>` reviews only that org's PRs: those that request your review and your own open PRs (as a comment, since GitHub refuses "request changes" on your own PR), so each org gets its own task and interval. `/run` with no org covers every org in one task.
 - **No overlap.** `/run` takes a lock on each org it covers (`sous due --lock`), so a run that is still working when the next one starts keeps that org; the next run skips it. A run that dies leaves the lock, which expires after 90 minutes.
 - **Cap.** `maxReviewsPerRun` applies to each run, so with one schedule per org it is a cap per org.
 - **By hand.** `/review <PR link>` reviews one PR now, whether or not it is due and whoever asked for review: it records the request with `sous ask`, which only the main session can run. Its cost and problems go through the same learning round as a scheduled run.

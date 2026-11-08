@@ -417,13 +417,14 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
 
     const files = await getAll<{ filename: string; patch?: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/files?per_page=100`);
-    const pull = await get<{ base: { ref: string }; state: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
+    const pull = await get<{ base: { ref: string }; state: string; user: { login: string } }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
+    const ownPr = pull.user.login === me;
     // The recipient is fixed by code, never by the draft: a watched org, an open PR, and one Sous already reviewed, Sivantha asked for by hand, or that asks for Sivantha's review by name or through a team.
     if (!watchedOrg(config.orgs, draft.org) || !draft.repo.toLowerCase().startsWith(`${draft.org.toLowerCase()}/`)) throw new Error(`${draft.repo} is not in a watched org; not posting`);
     if (pull.state !== 'open') throw new Error(`${key} is ${pull.state}; not posting`);
     const asked = async () =>
       askedYou(await get<{ users: { login: string }[]; teams: { slug: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`), me, draft.org, await getAll<{ slug: string; organization: { login: string } }>(gh, 'user/teams?per_page=100'));
-    if (!state.prs[key] && !askedByHand(draft.org, key) && !(await asked())) throw new Error(`${key} never asked for your review, by name or through your teams; not posting`);
+    if (!ownPr && !state.prs[key] && !askedByHand(draft.org, key) && !(await asked())) throw new Error(`${key} never asked for your review, by name or through your teams, and isn't yours; not posting`);
     const clone = join(sousHome(), 'cache', draft.repo);
     if (!existsSync(clone)) throw new Error(`no clone at ${clone}; run sous checkout first`);
     const git = (...a: string[]): string | null => {
@@ -473,7 +474,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
     let payload;
     try {
-      payload = buildReview({ ...draft, findings: keep }, { pending, attribution: config.attribution, files, suggestions: profile.postSuggestions });
+      payload = buildReview({ ...draft, findings: keep }, { pending, attribution: config.attribution, files, suggestions: profile.postSuggestions, ownPr });
     } catch (e) {
       if (e instanceof LintError) logEvent(draft.org, 'lint-refused', { pr: key, problems: e.problems });
       throw e;

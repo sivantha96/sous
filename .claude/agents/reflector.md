@@ -9,6 +9,8 @@ Input: an org, `~/.sous/orgs/<org>/signals.json`, and the run's retro from `sous
 
 Signals, strongest first: Sivantha's owner decisions and comments; Sivantha's edits or deletions of Sous comments; Sivantha's answers in `questions.md`; teammate input; outcomes; later fixes on lines Sous passed.
 
+**Sivantha's replies on their own PRs** (`"author": true` in signals) are an author's answers: check them like a teammate's below. Adopt a code fact that checks out; a rule only when the reply states it as one for the whole org ("we always ..."), never from a defence of this one change.
+
 **Teammate replies and reactions.** For each one, check its claim against the code at the PR head, the org's docs and primary sources.
 - A code fact that checks out ("this is already validated in X"): adopt it. Add or edit a bullet in `system/` or `rules/`, citing the file.
 - A claim about policy or convention, a claim you cannot settle, or a bare thumbs-down on a finding that still holds: add a question to `questions.md`. Never adopt policy on a teammate's word.

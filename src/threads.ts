@@ -24,7 +24,12 @@ export interface ThreadSignal {
 
 const hasSousMarker = (body: string | null | undefined): boolean => /<!-- sous:[0-9a-f]+ -->/.test(body ?? '');
 
-export function threadSignals(comments: PrComment[], pr: PrState, me: string): ThreadSignal[] {
+/**
+ * Teammate replies and reaction changes on Sous's threads. Sous posts as you, so your replies are
+ * normally yours to act on, not a teammate's. On your own PR (`authoredByMe`) they are the author's
+ * answers, and count like any author's; Sous's own replies carry its marker either way.
+ */
+export function threadSignals(comments: PrComment[], pr: PrState, me: string, authoredByMe = false): ThreadSignal[] {
   const own = new Set(pr.commentIds);
   const handled = new Set(pr.handled);
   const out: ThreadSignal[] = [];
@@ -32,7 +37,7 @@ export function threadSignals(comments: PrComment[], pr: PrState, me: string): T
     // A Sous reply in the thread after it means it was answered, even if state lost `handled`.
     const lastSous = Math.max(0, ...comments.filter((r) => r.in_reply_to_id === c.id && (pr.replyIds.includes(r.id) || hasSousMarker(r.body))).map((r) => r.id));
     const replies = comments
-      .filter((r) => r.in_reply_to_id === c.id && r.user?.login !== me && !handled.has(r.id) && r.id > lastSous)
+      .filter((r) => r.in_reply_to_id === c.id && (r.user?.login !== me || (authoredByMe && !pr.replyIds.includes(r.id) && !hasSousMarker(r.body))) && !handled.has(r.id) && r.id > lastSous)
       .map((r) => ({ id: r.id, user: r.user?.login ?? 'ghost', body: r.body }));
     const total = c.reactions?.total_count ?? 0;
     const seenBefore = pr.reactions[String(c.id)] ?? 0;

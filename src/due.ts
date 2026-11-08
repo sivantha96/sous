@@ -108,7 +108,8 @@ interface Pull {
 }
 
 export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: string, runStartedAt: Date): Promise<{ due: DueItem[]; skipped: { pr: string; why: string }[]; rebased: { pr: string; head: string }[] }> {
-  const queries = [`review-requested:${me}`, `reviewed-by:${me}`].map((q) => `is:pr is:open draft:false org:${profile.org} -author:${me} ${q}`);
+  // Teammates' PRs that asked for you or that you reviewed, and your own PRs: Sous reviews those too.
+  const queries = [`-author:${me} review-requested:${me}`, `-author:${me} reviewed-by:${me}`, `author:${me}`].map((q) => `is:pr is:open draft:false org:${profile.org} ${q}`);
   const found = new Map<string, SearchItem>();
   const requested = new Set<string>();
   for (const [i, q] of queries.entries()) {
@@ -138,7 +139,7 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
     if (pull.draft) return;
     if (pull.user.type === 'Bot') return void skipped.push({ pr: key, why: 'bot author' });
     const seen = state.prs[key];
-    const threads = seen?.commentIds.length ? threadSignals(await getAll<PrComment>(gh, `repos/${repo}/pulls/${item.number}/comments?per_page=100`), seen, me) : [];
+    const threads = seen?.commentIds.length ? threadSignals(await getAll<PrComment>(gh, `repos/${repo}/pulls/${item.number}/comments?per_page=100`), seen, me, pull.user.login === me) : [];
     const pushed = classify(state, repo, item.number, pull.head.sha);
     if (!pushed && seen?.reviewedAt && requested.has(`${item.repository_url}#${item.number}`)) {
       const events = await getAll<TimelineEvent>(gh, `repos/${repo}/issues/${item.number}/timeline?per_page=100`);
