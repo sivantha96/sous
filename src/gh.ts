@@ -19,10 +19,10 @@ export async function ghFor(account: string): Promise<Gh> {
     }));
 }
 
-const NETWORK = /i\/o timeout|connection reset|TLS handshake timeout|no such host|connection refused/i;
+const NETWORK = /i\/o timeout|connection reset|TLS handshake timeout|no such host|connection refused|HTTP 50[234]\b/i;
 
 /**
- * Retries a read that failed on the network, twice, after a pause: a scheduled run can start before
+ * Retries a read that failed on the network or with a GitHub 502, 503 or 504, twice, after a pause: a scheduled run can start before
  * the network is back. Writes (a stdin body, `-X`, a mutation) are never retried; `sous post` adopts a lost post.
  */
 export function withRetry(gh: Gh, waits = [5000, 20000]): Gh {

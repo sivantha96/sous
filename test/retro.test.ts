@@ -99,3 +99,12 @@ test('a review already scored since its last post is not scored again', async ()
   assert.equal(unscored([posted, { at: '2026-11-05T00:00:02Z', type: 'scored', pr: 'o/r#1' }], [s]).length, 0);
   assert.equal(unscored([posted, { at: '2026-11-05T00:00:02Z', type: 'scored', pr: 'o/r#1' }, { at: '2026-11-05T00:00:03Z', type: 'reviewed', pr: 'o/r#1' }], [s]).length, 1, 'a new review is scored');
 });
+
+test('skips that are policy and rebase skips are not problems; a skip on an error is', () => {
+  const events: LoggedEvent[] = [
+    { at: '2026-11-05T00:00:01Z', type: 'skipped', pr: 'o/r#1', why: 'bot author' },
+    { at: '2026-11-05T00:00:02Z', type: 'skipped', pr: 'o/r#2', why: 'error: gh: HTTP 503' },
+    { at: '2026-11-05T00:00:03Z', type: 'rebase-skip', pr: 'o/r#3' },
+  ];
+  assert.deepEqual(retro(events, '2026-11-05T00:00:00Z').problems.map((e) => e.pr), ['o/r#2']);
+});
