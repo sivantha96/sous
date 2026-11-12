@@ -9,7 +9,7 @@ description: The scheduled run. Reviews what is due in one org (or every org), t
    - If its reason is `REPLY`, that is all: move on.
    - If its reason is `REREQUESTED`, the author asked for your review again with no new push: follow `/review` on the same head. `sous post` drops points already made, and records the head when nothing new is left.
    - If its gate is `wait`, run `./bin/sous gate <org> <repo> <n> <head> <run start time>` (at most twice for the same PR; it polls inside). On `defer`, move on; the next run picks it up.
-   - Then follow `/review` steps 2 to 8 for it. Run up to 2 PRs at the same time.
+   - Then follow `/review` steps 2 to 8 for it, at the `head` the gate printed (or, with no gate, the head `gh api repos/<repo>/pulls/<n>` gives now), never an older one from `due`. Run up to 2 PRs at the same time.
 3. Run `./bin/sous tokens --org <org> --label run --session ${CLAUDE_SESSION_ID}` for each org that had a review, so the run's tokens and time are in the event log before the learning round reads them.
 4. Run `/learn-round <org> <run start time>` for every org this run touched: a review, a reply, a skip, a refusal or a block. Run its subagents in the foreground and wait for each.
 5. Run `./bin/sous unlock <org> ${CLAUDE_SESSION_ID}` for every org this run locked, even when a step failed. This is the run's last command.

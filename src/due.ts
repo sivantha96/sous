@@ -26,13 +26,14 @@ export interface DueItem {
 
 /**
  * A content id for a PR's change, independent of commits and line numbers: the same patch rebased
- * onto a new base gets the same id. Lines that only moved keep the id too.
+ * onto a new base gets the same id while its hunks' surrounding lines are unchanged; a change to the
+ * PR's lines or where they sit against the base changes it.
  */
 export function patchId(files: { filename: string; patch?: string }[]): string {
   const h = createHash('sha256');
   for (const f of [...files].sort((a, b) => a.filename.localeCompare(b.filename))) {
     h.update(`${f.filename}\n`);
-    for (const row of (f.patch ?? '').split('\n')) if (/^[+-]/.test(row) && !/^(\+\+\+|---)/.test(row)) h.update(`${row.trimEnd()}\n`);
+    for (const row of (f.patch ?? '').split('\n')) if (/^[+\- ]/.test(row) && !/^(\+\+\+|---)/.test(row)) h.update(`${row.trimEnd()}\n`);
   }
   return h.digest('hex').slice(0, 16);
 }
@@ -107,7 +108,7 @@ interface Pull {
   base: { ref: string };
 }
 
-export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: string, runStartedAt: Date): Promise<{ due: DueItem[]; skipped: { pr: string; why: string }[]; rebased: { pr: string; head: string }[] }> {
+export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: string, runStartedAt: Date): Promise<{ due: DueItem[]; skipped: { pr: string; why: string }[]; rebased: { pr: string; head: string; mergeBase?: string }[] }> {
   // Teammates' PRs that asked for you or that you reviewed, and your own PRs: Sous reviews those too.
   const queries = [`-author:${me} review-requested:${me}`, `-author:${me} reviewed-by:${me}`, `author:${me}`].map((q) => `is:pr is:open draft:false org:${profile.org} ${q}`);
   const found = new Map<string, SearchItem>();
@@ -121,7 +122,7 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
 
   const due: DueItem[] = [];
   const skipped: { pr: string; why: string }[] = [];
-  const rebased: { pr: string; head: string }[] = [];
+  const rebased: { pr: string; head: string; mergeBase?: string }[] = [];
   // One PR's failure is logged as skipped; it never stops the other PRs or the org.
   await mapLimit([...found.values()], 6, async (item) => {
     const repo = item.repository_url.split('/repos/')[1]!;
@@ -166,7 +167,7 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
         get<{ merge_base_commit: { sha: string } }>(gh, `repos/${repo}/compare/${encodeURIComponent(pull.base.ref)}...${pull.head.sha}`).catch(() => null),
       ]);
       const s = pushScope(seen, { compareStatus: delta.status, mergeBase: base?.merge_base_commit.sha ?? '', patchId: patchId(fileList) });
-      if (s === 'skip') return void rebased.push({ pr: key, head: pull.head.sha });
+      if (s === 'skip') return void rebased.push({ pr: key, head: pull.head.sha, mergeBase: base?.merge_base_commit.sha });
       scope = s;
     }
     const commit = await get<{ commit: { committer: { date: string } } }>(gh, `repos/${repo}/commits/${pull.head.sha}`);
