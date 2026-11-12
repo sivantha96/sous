@@ -7,13 +7,15 @@ import { checkOutbound, ensureCanaries, otherOrgTerms } from './outbound.ts';
 import { hiddenInDiff, stripHidden } from './hidden.ts';
 import { CODEOWNERS_PATHS, parseCodeowners, unownedChanges } from './owners.ts';
 import { findSkill } from './skills.ts';
+import { fetchArgs, prefetchBase } from './checkout.ts';
+import { helpFor } from './help.ts';
 import { findDue, patchId } from './due.ts';
-import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
+import { pollGate } from './gate.ts';
 import { get, getAll, ghFor, send, whoami } from './gh.ts';
 import { appendLine, focusPath, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
 import { buildDenylist, findLeaks } from './leak.ts';
-import { applyCorrections, isDuplicate, missingDecisions, verifyEvidence, type Correction } from './evidence.ts';
-import { buildReview, dismissOwn, hasMarker, LintError, marker, postReview, signed, type Draft } from './post.ts';
+import { applyCorrections, decidedTwice, isDuplicate, missingDecisions, verifyEvidence, type Correction } from './evidence.ts';
+import { assertHead, buildReview, dismissOwn, hasMarker, LintError, marker, postReview, signed, type Draft } from './post.ts';
 import { commitAt, gateFails, lensRecall, meanTotals, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
 import { assertOwnThread, reviewThreads, sousHasLastWord, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
@@ -185,7 +187,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
         const state = loadState(org);
         for (const r of rebased) {
           const pr = state.prs[r.pr];
-          if (pr) state.prs[r.pr] = { ...pr, head: r.head };
+          if (pr) state.prs[r.pr] = { ...pr, head: r.head, ...(r.mergeBase ? { mergeBase: r.mergeBase } : {}) };
           logEvent(org, 'rebase-skip', r);
         }
         saveState(org, state);
@@ -267,19 +269,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (!org || !repo || !n || !head) throw new Error('usage: sous gate <org> <owner/repo> <number> <head> [run-started-at]');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
-    const commit = await get<{ commit: { committer: { date: string } } }>(gh, `repos/${repo}/commits/${head}`);
-    const pushedAt = new Date(commit.commit.committer.date);
-    const runStartedAt = startedAt ? new Date(startedAt) : new Date();
-    const callStarted = Date.now();
-    for (;;) {
-      const signal = await readCodeRabbit(gh, profile, repo, Number(n), head, pushedAt);
-      const result = gate({ enabled: profile.coderabbit !== null, signal, pushedAt, runStartedAt, now: new Date() });
-      if (result.action !== 'wait' || Date.now() - callStarted + POLL_SECONDS * 1000 > 7 * 60_000) {
-        print(result);
-        return 0;
-      }
-      await sleep(result.recheckSeconds);
-    }
+    print(await pollGate(gh, profile, repo, Number(n), head, startedAt ? new Date(startedAt) : new Date(), { sleep, budgetMs: 7 * 60_000 }));
+    return 0;
   },
 
   /** Read-only checkout of the PR head. Nothing in it is ever run. */
@@ -300,7 +291,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     await run('git', ['config', '--local', '--unset-all', 'credential.helper'], { cwd: clone }).catch(() => undefined);
     await run('git', ['config', '--local', '--add', 'credential.helper', ''], { cwd: clone });
     await run('git', ['config', '--local', '--add', 'credential.helper', '!gh auth git-credential'], { cwd: clone });
-    await run('git', ['fetch', '-q', 'origin', `pull/${n}/head`, `+refs/heads/${base}:refs/remotes/origin/${base}`], { cwd: clone, env });
+    await run('git', fetchArgs(n), { cwd: clone, env });
     const tree = join(clone, '.worktrees', `${n}-${head.slice(0, 12)}`);
     // A checkout made before AI-config folders were excluded is rebuilt.
     if (existsSync(tree) && AI_CONFIG.some((p) => existsSync(join(tree, p)))) await run('git', ['worktree', 'remove', '--force', tree], { cwd: clone });
@@ -313,6 +304,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
     const { stdout: baseFiles } = await run('git', ['ls-tree', '--name-only', `origin/${base}`], { cwd: clone });
     const conventions = CONVENTION_FILES.filter((f) => baseFiles.split('\n').includes(f));
+    await prefetchBase(run, clone, base, [...conventions, ...AI_CONFIG], env);
     const { stdout: diff } = await run('git', ['diff', '-U0', '--no-ext-diff', `origin/${base}...${head}`], { cwd: clone, maxBuffer: 256 * 1024 * 1024 });
     print({ tree, baseRef: `origin/${base}`, readInstructionsWith: `git -C ${clone} show origin/${base}:<path>`, baseConventions: conventions, excludedFromCheckout: AI_CONFIG, hiddenCharacters: hiddenInDiff(diff) });
     return 0;
@@ -425,11 +417,12 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
 
     const files = await getAll<{ filename: string; patch?: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/files?per_page=100`);
-    const pull = await get<{ base: { ref: string }; state: string; user: { login: string } }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
+    const pull = await get<{ base: { ref: string }; head: { sha: string }; state: string; user: { login: string } }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
     const ownPr = pull.user.login === me;
     // The recipient is fixed by code, never by the draft: a watched org, an open PR, and one Sous already reviewed, Sivantha asked for by hand, or that asks for Sivantha's review by name or through a team.
     if (!watchedOrg(config.orgs, draft.org) || !draft.repo.toLowerCase().startsWith(`${draft.org.toLowerCase()}/`)) throw new Error(`${draft.repo} is not in a watched org; not posting`);
     if (pull.state !== 'open') throw new Error(`${key} is ${pull.state}; not posting`);
+    assertHead(key, pull.head.sha, draft.head, 'posting');
     const asked = async () =>
       askedYou(await get<{ users: { login: string }[]; teams: { slug: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`), me, draft.org, await getAll<{ slug: string; organization: { login: string } }>(gh, 'user/teams?per_page=100'));
     if (!ownPr && !state.prs[key] && !askedByHand(draft.org, key) && !(await asked())) throw new Error(`${key} never asked for your review, by name or through your teams, and isn't yours; not posting`);
@@ -495,7 +488,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (wasRequested && !(await requested()).includes(me)) {
       await send(gh, 'POST', `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`, { reviewers: [me] }).catch((e: Error) => logEvent(draft.org, 'request-not-restored', { pr: key, error: e.message.slice(0, 200) }));
     }
-    state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, reviewId], commentIds: [...prev.commentIds, ...commentIds], ...(base ? { mergeBase: base } : {}), patchId: patchId(files) };
+    state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, reviewId], commentIds: [...prev.commentIds, ...commentIds], ...(base ? { mergeBase: base } : {}), patchId: pull.head.sha === draft.head ? patchId(files) : undefined };
     saveState(draft.org, state);
     logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: keep.map((f) => ({ severity: f.severity, path: f.path, line: f.line, id: f.id, memory: f.memory ?? [] })) });
     print({ pr: key, reviewId, event: payload.event ?? 'PENDING', comments: commentIds.length, dropped });
@@ -513,6 +506,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (v.kept.some((k) => !k.ownerDecision)) throw new Error('the verifier kept findings; post them instead of marking');
     const state = loadState(org);
     const key = keyIn(state, prKey(repo, Number(n)));
+    const pull = await get<{ head: { sha: string } }>(await ghFor(loadProfile(org).ghAccount), `repos/${repo}/pulls/${n}`);
+    assertHead(key, pull.head.sha, head, 'marking');
     state.prs[key] = { ...(state.prs[key] ?? emptyPr(head)), head, reviewedAt: new Date().toISOString() };
     saveState(org, state);
     logEvent(org, 'reviewed', { pr: key, head, event: 'NONE', findings: [], droppedByVerifier: v.dropped.length });
@@ -527,13 +522,23 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   async decisions(args) {
     const [verifiedFile, ...lensFiles] = args;
     if (!verifiedFile || lensFiles.length === 0) throw new Error('usage: sous decisions <verified.json> <lens.json...>');
-    const ids = lensFiles.flatMap((f) => (JSON.parse(readFileSync(f, 'utf8')) as { candidates?: { id?: string }[] }).candidates ?? []).map((c, i) => c.id ?? `missing-id-${i}`);
+    const invalidJson: string[] = [];
+    const ids = lensFiles
+      .flatMap((f) => {
+        try {
+          return (JSON.parse(readFileSync(f, 'utf8')) as { candidates?: { id?: string }[] }).candidates ?? [];
+        } catch {
+          invalidJson.push(f);
+          return [];
+        }
+      })
+      .map((c, i) => c.id ?? `missing-id-${i}`);
     const verified = JSON.parse(readFileSync(verifiedFile, 'utf8')) as { kept?: { id?: string; merged?: string[]; counterEvidence?: unknown[] }[]; dropped?: { id?: string }[] };
     const noCounterEvidence = (verified.kept ?? []).filter((k) => !k.counterEvidence?.length).map((k) => k.id ?? '?');
     // Listed in `missing` too, so the one resend the review already makes covers them.
     const missing = [...missingDecisions(ids, verified), ...noCounterEvidence];
-    print({ candidates: ids.length, missing, noCounterEvidence });
-    return missing.length ? 1 : 0;
+    print({ candidates: ids.length, missing, decidedTwice: decidedTwice(ids, verified), noCounterEvidence, invalidJson });
+    return missing.length || invalidJson.length ? 1 : 0;
   },
 
   /** Replies in a thread Sous started. Never in a thread you or anyone else started. */
@@ -556,12 +561,23 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (isPaused(config, org)) throw new Error(`${org} is paused; not replying`);
     guardOutbound(org, profile, key, [text]);
     const gh = await ghFor(profile.ghAccount);
-    const body = signed(text, config.attribution, pr.head);
+    // Sign with the head the reply speaks about, not the one Sous last reviewed.
+    const pull = await get<{ head: { sha: string } }>(gh, `repos/${repo}/pulls/${n}`);
+    const body = signed(text, config.attribution, pull.head.sha);
     const posted = JSON.parse(await gh(['api', '-X', 'POST', `repos/${repo}/pulls/${n}/comments/${id}/replies`, '--input', '-'], JSON.stringify({ body }))) as { id: number };
     pr.replyIds.push(posted.id);
     saveState(org, state);
     logEvent(org, 'replied', { pr: key, thread: Number(id), reply: posted.id });
     print({ replied: posted.id });
+    return 0;
+  },
+
+  /** Each review thread's first comment id and whether it is resolved or outdated. Read-only. */
+  async threads(args) {
+    const [org, rawRepo, n] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
+    if (!org || !repo || !n) throw new Error('usage: sous threads <org> <owner/repo> <number>');
+    print(await reviewThreads(await ghFor(loadProfile(org).ghAccount), repo, Number(n)));
     return 0;
   },
 
@@ -596,7 +612,9 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const key = keyIn(state, prKey(repo, Number(n)));
     const pr = state.prs[key];
     if (!pr) throw new Error(`${key} is not in state`);
-    const ids = (values.replies ?? '').split(',').filter(Boolean).map(Number);
+    // `--replies 1 2 3` leaves 2 and 3 as positionals; take them too, comma- or space-separated.
+    const ids = [values.replies ?? '', ...positionals.slice(3)].join(',').split(/[,\s]+/).filter(Boolean).map(Number);
+    if (ids.some((i) => !Number.isInteger(i))) throw new Error('seen: reply ids must be numbers');
     pr.handled = [...new Set([...pr.handled, ...ids])];
     // Reactions: record today's counts on every Sous comment.
     const gh = await ghFor(profile.ghAccount);
@@ -619,11 +637,13 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const pr = state.prs[keyIn(state, prKey(repo, Number(n)))];
     if (!pr) throw new Error('not in state');
     const gh = await ghFor(profile.ghAccount);
+    const pull = await get<{ head: { sha: string } }>(gh, `repos/${repo}/pulls/${n}`);
     const reviews = await getAll<{ id: number; state: string; commit_id: string }>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`);
     const comments = await getAll<PrComment & { original_commit_id: string }>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`);
     const resolved = new Set((await reviewThreads(gh, repo, Number(n))).filter((t) => t.isResolved).map((t) => t.firstCommentId));
     print({
-      head: pr.head,
+      head: pull.head.sha,
+      reviewedHead: pr.head,
       reviews: reviews.filter((r) => pr.reviewIds.includes(r.id)).map((r) => ({ id: r.id, state: r.state, commit: r.commit_id })),
       blocking: reviews.filter((r) => pr.reviewIds.includes(r.id) && r.state === 'CHANGES_REQUESTED').map((r) => r.id),
       findings: comments
@@ -852,8 +872,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
     const defaultRepo = profile.ruleSources[0]?.split(':')[0];
-    const latestCache = new Map<string, string | null | 'deleted'>();
-    const latest = async (c: Cite): Promise<string | null | 'deleted'> => {
+    const latestCache = new Map<string, string | null | 'deleted' | 'branch'>();
+    const latest = async (c: Cite): Promise<string | null | 'deleted' | 'branch'> => {
       const repo = c.repo ?? defaultRepo;
       if (!repo) return null;
       const key = `${repo}:${c.path}`;
@@ -862,7 +882,12 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
         const exists = await get(gh, `repos/${repo}/contents/${c.path}`).then(() => true, () => false);
         latestCache.set(key, exists ? (commits[0]?.sha ?? null) : 'deleted');
       }
-      return latestCache.get(key)!;
+      const onMain = latestCache.get(key)!;
+      if (onMain !== 'deleted' || !c.sha) return onMain;
+      // A fact from a PR branch is missing on the default branch but may still hold at its pinned commit.
+      const pinned = `${key}@${c.sha}`;
+      if (!latestCache.has(pinned)) latestCache.set(pinned, await get(gh, `repos/${repo}/contents/${c.path}?ref=${c.sha}`).then(() => 'branch' as const, () => 'deleted' as const));
+      return latestCache.get(pinned)!;
     };
     const report: { at: string; state: string; cite: string }[] = [];
     let changed = 0;
@@ -883,7 +908,9 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
             changed++;
           }
         }
-        writeFileSync(path, lines.filter((l) => l !== '\u0000').join('\n'));
+        // An unchanged file is left alone, so an agent's next Edit doesn't fail on "modified since read".
+        const next = lines.filter((l) => l !== '\u0000').join('\n');
+        if (next !== readFileSync(path, 'utf8')) writeFileSync(path, next);
       }
     }
     if (changed) await commitMemory(orgDir(org), `facts: ${values.retire ? 'retire facts whose files are gone' : ''}${values.pin ? ' pin unpinned cites' : ''}`.trim());
@@ -1100,6 +1127,12 @@ function setPaused(org: string | undefined, on: boolean): number {
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
+// Help reads this file's source and never runs a command, so every agent may call it.
+if (cmd === 'help' || rest.includes('--help')) {
+  const about = cmd === 'help' && !rest[0] ? null : helpFor(readFileSync(import.meta.filename, 'utf8'), cmd === 'help' ? rest[0]! : cmd!);
+  console.log(about ?? `usage: sous <${Object.keys(commands).join('|')}>\n./bin/sous <command> --help describes one command`);
+  process.exit(about || (cmd === 'help' && !rest[0]) ? 0 : 64);
+}
 const handler = cmd ? commands[cmd] : undefined;
 if (!handler) {
   console.error(`usage: sous <${Object.keys(commands).join('|')}>`);

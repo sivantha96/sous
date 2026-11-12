@@ -79,15 +79,22 @@ export function verifyEvidence(findings: Finding[], ctx: EvidenceContext): { fin
     const side = f.side ?? 'RIGHT';
     let { path, line } = f;
     path = completePath(path, ctx.tree) ?? path;
-    if (f.quote) {
+    // A one-line "range" is a plain comment.
+    const startLine = f.startLine === f.line ? undefined : f.startLine;
+    // A range's quote may be its first line (the verifier's anchor); the writer moves `line` to the last.
+    const inRange = startLine !== undefined && startLine < line && !!f.quote?.trim() && !!ctx.read(side, path)?.slice(startLine - 1, line).some((l) => l.includes(f.quote!.trim()));
+    if (!f.quote) problems.push({ index, problem: `${f.path}:${f.line}: no anchor quote` });
+    else if (!inRange) {
       const fixed = fixQuote({ path, line, quote: f.quote, side }, index, 'anchor');
       ({ path, line } = fixed);
-    } else problems.push({ index, problem: `${f.path}:${f.line}: no anchor quote` });
+    }
     if (!anchors.get(path)?.[side].has(line)) problems.push({ index, problem: `${path}:${line}: not a ${side === 'LEFT' ? 'removed or kept' : 'added or kept'} line of the diff; GitHub would reject the whole review` });
     const evidence = (f.evidence ?? []).map((q) => fixQuote(q, index, 'evidence'));
     if (!f.counterEvidence?.length) problems.push({ index, problem: `${path}:${line}: no counter-evidence (the guard, caller or test checked while trying to refute it)` });
     const counterEvidence = (f.counterEvidence ?? []).map((q) => fixQuote(q, index, 'counter-evidence'));
-    return { ...f, path, line, evidence, counterEvidence };
+    const out = { ...f, path, line, evidence, counterEvidence };
+    if (startLine === undefined) delete out.startLine;
+    return out;
   });
   return { findings: out, problems };
 }
@@ -132,8 +139,10 @@ export function isDuplicate(f: Pick<Finding, 'path' | 'line' | 'body'>, existing
   return shared / Math.min(a.size, b.size) >= 0.6;
 }
 
-/** Every lens candidate id has exactly one verifier decision: kept, merged into a kept one, or dropped. */
-export function missingDecisions(candidateIds: string[], verified: { kept?: { id?: string; merged?: string[] }[]; dropped?: { id?: string }[] }): string[] {
+type Verified = { kept?: { id?: string; merged?: string[] }[]; dropped?: { id?: string }[] };
+
+/** How many decisions the verifier made for each id: kept, merged into a kept one, or dropped. */
+export function decisionCounts(verified: Verified): Map<string, number> {
   const decided = new Map<string, number>();
   const count = (id: string | undefined) => id && decided.set(id, (decided.get(id) ?? 0) + 1);
   for (const k of verified.kept ?? []) {
@@ -141,5 +150,17 @@ export function missingDecisions(candidateIds: string[], verified: { kept?: { id
     for (const m of k.merged ?? []) count(m);
   }
   for (const d of verified.dropped ?? []) count(d.id);
+  return decided;
+}
+
+/** Every lens candidate id has exactly one verifier decision: kept, merged into a kept one, or dropped. */
+export function missingDecisions(candidateIds: string[], verified: Verified): string[] {
+  const decided = decisionCounts(verified);
   return candidateIds.filter((id) => decided.get(id) !== 1);
+}
+
+/** Ids the verifier decided more than once (e.g. merged and dropped): the fix is to pick one, not to decide. */
+export function decidedTwice(candidateIds: string[], verified: Verified): string[] {
+  const decided = decisionCounts(verified);
+  return candidateIds.filter((id) => (decided.get(id) ?? 0) > 1);
 }
