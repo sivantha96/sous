@@ -12,3 +12,10 @@ test('an agent told to use Edit or Write has that tool', () => {
     if (/with (the )?Write\b/.test(body)) assert.ok(tools(body).includes('Write'), `${name} needs Write`);
   }
 });
+
+test('a failed decisions check goes back to the verifier, never a hand fix', () => {
+  const review = readFileSync(new URL('../.claude/commands/review.md', import.meta.url), 'utf8');
+  assert.match(review, /never edit the verified file yourself/);
+  assert.match(review, /invalidJson/);
+  assert.match(review, /decidedTwice/);
+});

@@ -117,13 +117,15 @@ export function searchMemory(bullets: Bullet[], paths: string[], terms: string[]
   return sorted.filter((h, i) => i < limit || scoped(h));
 }
 
-export type FactState = 'current' | 'stale' | 'gone' | 'unpinned';
+export type FactState = 'current' | 'stale' | 'gone' | 'unpinned' | 'branch';
 
 /**
  * Where a cited fact stands: `gone` when its file no longer exists, `stale` when the file changed
- * after the pinned commit, `unpinned` when no commit was recorded.
+ * after the pinned commit, `unpinned` when no commit was recorded, `branch` when the file is missing
+ * on the default branch but exists at the pinned commit (a PR branch fact: reported, never retired).
  */
-export function factState(cite: Cite, latest: string | null | 'deleted'): FactState {
+export function factState(cite: Cite, latest: string | null | 'deleted' | 'branch'): FactState {
+  if (latest === 'branch') return 'branch';
   if (latest === 'deleted') return 'gone';
   if (!cite.sha) return 'unpinned';
   return latest && !latest.startsWith(cite.sha) ? 'stale' : 'current';

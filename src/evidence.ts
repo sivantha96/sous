@@ -132,8 +132,10 @@ export function isDuplicate(f: Pick<Finding, 'path' | 'line' | 'body'>, existing
   return shared / Math.min(a.size, b.size) >= 0.6;
 }
 
-/** Every lens candidate id has exactly one verifier decision: kept, merged into a kept one, or dropped. */
-export function missingDecisions(candidateIds: string[], verified: { kept?: { id?: string; merged?: string[] }[]; dropped?: { id?: string }[] }): string[] {
+type Verified = { kept?: { id?: string; merged?: string[] }[]; dropped?: { id?: string }[] };
+
+/** How many decisions the verifier made for each id: kept, merged into a kept one, or dropped. */
+export function decisionCounts(verified: Verified): Map<string, number> {
   const decided = new Map<string, number>();
   const count = (id: string | undefined) => id && decided.set(id, (decided.get(id) ?? 0) + 1);
   for (const k of verified.kept ?? []) {
@@ -141,5 +143,17 @@ export function missingDecisions(candidateIds: string[], verified: { kept?: { id
     for (const m of k.merged ?? []) count(m);
   }
   for (const d of verified.dropped ?? []) count(d.id);
+  return decided;
+}
+
+/** Every lens candidate id has exactly one verifier decision: kept, merged into a kept one, or dropped. */
+export function missingDecisions(candidateIds: string[], verified: Verified): string[] {
+  const decided = decisionCounts(verified);
   return candidateIds.filter((id) => decided.get(id) !== 1);
+}
+
+/** Ids the verifier decided more than once (e.g. merged and dropped): the fix is to pick one, not to decide. */
+export function decidedTwice(candidateIds: string[], verified: Verified): string[] {
+  const decided = decisionCounts(verified);
+  return candidateIds.filter((id) => (decided.get(id) ?? 0) > 1);
 }

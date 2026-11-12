@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { applyCorrections, completePath, diffLines, isDuplicate, locate, missingDecisions, verifyEvidence } from '../src/evidence.ts';
+import { applyCorrections, completePath, decidedTwice, diffLines, isDuplicate, locate, missingDecisions, verifyEvidence } from '../src/evidence.ts';
 import type { Finding } from '../src/voice-lint.ts';
 
 const patch = '@@ -1,4 +1,4 @@\n a\n-if (!tenant) throw\n+run()\n c\n d';
@@ -72,4 +72,10 @@ test('the same point already posted is a duplicate; a different point on the sam
 test('every candidate id needs exactly one verifier decision', () => {
   assert.deepEqual(missingDecisions(['c-1', 'c-2', 'c-3'], { kept: [{ id: 'c-1', merged: ['c-2'] }], dropped: [{ id: 'c-3' }] }), []);
   assert.deepEqual(missingDecisions(['c-1', 'c-2'], { kept: [{ id: 'c-1' }], dropped: [{ id: 'c-1' }] }), ['c-1', 'c-2']);
+});
+
+test('an id merged and also dropped is decided twice; an undecided one is only missing', () => {
+  const v = { kept: [{ id: 'a', merged: ['b'] }], dropped: [{ id: 'b' }] };
+  assert.deepEqual(decidedTwice(['a', 'b', 'c'], v), ['b']);
+  assert.deepEqual(missingDecisions(['a', 'b', 'c'], v), ['b', 'c']);
 });
