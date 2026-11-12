@@ -46,7 +46,7 @@ test('past the core tier the breaker lens runs; testing notes are needed only wh
 });
 
 test('testing notes are a testing heading, a checked test box, a command block or a screenshot', () => {
-  for (const body of ['## Testing\nran it', '### How was this tested?', '- [x] Tested on staging', '```\npnpm test\n```', '![after](https://x/a.png)', '<img src="a">'])
+  for (const body of ['## Testing\nran it', '### How was this tested?', '### How it was tested\nran pnpm test', '## Evidence\nexit 0', '- [x] Tested on staging', '```\npnpm test\n```', '![after](https://x/a.png)', '<img src="a">'])
     assert.ok(hasTestingNotes(body), body);
-  for (const body of ['', 'Adds refunds.', '- [ ] Tested', 'see the attestation flow']) assert.ok(!hasTestingNotes(body), body);
+  for (const body of ['', 'Adds refunds.', '- [ ] Tested', '## How it works', 'see the attestation flow']) assert.ok(!hasTestingNotes(body), body);
 });

@@ -6,7 +6,10 @@ import type { Usage } from './usage.ts';
  * to the median of the runs before it. A run is every event from its start time on; its cost is the
  * `usage` event `/run` logs with the label `run`, or `/review` with `review`.
  */
-const PROBLEMS = new Set(['lint-refused', 'outbound-refused', 'blocked', 'skipped', 'deferred', 'dropped', 'rebase-skip', 'request-not-restored']);
+const PROBLEMS = new Set(['lint-refused', 'outbound-refused', 'blocked', 'skipped', 'deferred', 'dropped', 'request-not-restored']);
+
+/** Skips that are policy, not faults (src/due.ts). A rebase skip is the saving working, so it is no problem either. `runSummary` keeps both. */
+const BY_DESIGN = new Set(['bot author', 'only lockfiles or generated files']);
 
 /** Tokens a run pays for in full: cache reads cost a tenth and are reported apart. */
 const paid = (totals: Record<string, Usage> = {}): number => Object.values(totals).reduce((s, u) => s + u.input + u.output + u.cacheWrite, 0);
@@ -48,7 +51,7 @@ export function retro(events: LoggedEvent[], since: string, history = 10, scope:
     reviews: run
       .filter((e) => e.type === 'reviewed' || e.type === 'adopted')
       .map((e) => (e.type === 'adopted' ? { pr: e.pr, event: 'ADOPTED', findings: typeof e.comments === 'number' ? e.comments : 0 } : { pr: e.pr, event: e.event, findings: Array.isArray(e.findings) ? e.findings.length : 0 })),
-    problems: run.filter((e) => PROBLEMS.has(e.type)),
+    problems: run.filter((e) => PROBLEMS.has(e.type) && !(e.type === 'skipped' && BY_DESIGN.has(e.why as string))),
     // What the review-judge scored 2 or lower this run: the reflector looks for the cause.
     lowScores: run.filter((e) => e.type === 'scored' && Object.values((e.scores ?? {}) as Record<string, number>).some((v) => v <= LOW)),
     cost: usage.length

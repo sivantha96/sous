@@ -38,7 +38,7 @@ const ALWAYS = ['correctness', 'tests-and-guards', 'pr-hygiene', 'docs-and-decis
 
 /** A testing heading, a checked test box, a command block, or an image or video in the PR description. */
 export const hasTestingNotes = (body: string): boolean =>
-  /^#{1,6}\s*(how (was this|to|i) test\w*|test(ing|ed|s)?|verification|verified|qa)\b/im.test(body) ||
+  /^#{1,6}\s*(how\b[^\n]*\btest\w*|test(ing|ed|s)?|evidence|verification|verified|qa)\b/im.test(body) ||
   /^\s*[-*]\s*\[x\].*\b(test|verif|tried|ran)/im.test(body) ||
   /```[\s\S]*?\b(test|curl|pnpm|npm|yarn|pytest|go test)\b[\s\S]*?```/i.test(body) ||
   /!\[[^\]]*\]\(|<img\s|<video\s|\.(png|jpe?g|gif|mp4|mov)\b/i.test(body);

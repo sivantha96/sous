@@ -27,6 +27,12 @@ test('a read that hits a network timeout is retried; a write or another error is
     assert.equal(write.calls, 1);
   }
 
+  const busy = flaky(1, 'gh: HTTP 503');
+  assert.equal(await withRetry(busy, [0, 0])(['api', 'x']), 'ok');
+  const broken = flaky(1, 'gh: HTTP 500');
+  await assert.rejects(withRetry(broken, [0])(['api', 'x']), /500/);
+  assert.equal(broken.calls, 1);
+
   const notFound = flaky(1, 'HTTP 404');
   await assert.rejects(withRetry(notFound, [0])(['api', 'x']), /404/);
   assert.equal(notFound.calls, 1);
