@@ -27,3 +27,10 @@ test('the signal collector reads only what came after the last round, and a dism
   assert.match(collector, /alreadyLearned/);
   assert.match(collector, /dismissed_review\.state/);
 });
+
+test('a failed decisions check goes back to the verifier, never a hand fix', () => {
+  const review = readFileSync(new URL('../.claude/commands/review.md', import.meta.url), 'utf8');
+  assert.match(review, /never edit the verified file yourself/);
+  assert.match(review, /invalidJson/);
+  assert.match(review, /decidedTwice/);
+});

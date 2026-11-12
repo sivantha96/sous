@@ -58,7 +58,7 @@ interface ThreadPage {
       pullRequest: {
         reviewThreads: {
           pageInfo: { hasNextPage: boolean; endCursor: string | null };
-          nodes: { id: string; isResolved: boolean; comments: { nodes: { databaseId: number }[] } }[];
+          nodes: { id: string; isResolved: boolean; isOutdated: boolean; comments: { nodes: { databaseId: number }[] } }[];
         };
       };
     };
@@ -68,6 +68,8 @@ interface ThreadPage {
 export interface ReviewThread {
   id: string;
   isResolved: boolean;
+  /** The lines it was left on changed since. */
+  isOutdated: boolean;
   /** The id of the comment that starts the thread. */
   firstCommentId: number | undefined;
 }
@@ -75,14 +77,14 @@ export interface ReviewThread {
 /** Every review thread on a PR, following GraphQL pages. */
 export async function reviewThreads(gh: (args: string[]) => Promise<string>, repo: string, n: number): Promise<ReviewThread[]> {
   const [owner, name] = repo.split('/');
-  const query = `query($owner:String!,$name:String!,$n:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved comments(first:1){nodes{databaseId}}}}}}}`;
+  const query = `query($owner:String!,$name:String!,$n:Int!,$after:String){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100,after:$after){pageInfo{hasNextPage endCursor} nodes{id isResolved isOutdated comments(first:1){nodes{databaseId}}}}}}}`;
   const out: ReviewThread[] = [];
   let after: string | null = null;
   for (;;) {
     const args = ['api', 'graphql', '-f', `query=${query}`, '-F', `owner=${owner}`, '-F', `name=${name}`, '-F', `n=${n}`];
     if (after) args.push('-F', `after=${after}`);
     const threads = (JSON.parse(await gh(args)) as ThreadPage).data.repository.pullRequest.reviewThreads;
-    out.push(...threads.nodes.map((t) => ({ id: t.id, isResolved: t.isResolved, firstCommentId: t.comments.nodes[0]?.databaseId })));
+    out.push(...threads.nodes.map((t) => ({ id: t.id, isResolved: t.isResolved, isOutdated: t.isOutdated, firstCommentId: t.comments.nodes[0]?.databaseId })));
     if (!threads.pageInfo.hasNextPage) return out;
     after = threads.pageInfo.endCursor;
   }
