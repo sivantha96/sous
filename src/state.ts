@@ -29,6 +29,9 @@ export interface OrgState {
 
 export const prKey = (repo: string, n: number): string => `${repo}#${n}`;
 
+/** `api` and `acme/api` both name the org's repo; agents pass either. An explicit other owner is kept, so `ask` and `post` still refuse it. */
+export const repoArg = (org: string, repo: string): string => (repo.includes('/') ? repo : `${org}/${repo}`);
+
 /** GitHub owner and repo names ignore case, so Sous's lookups by name do too. */
 export const sameName = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
