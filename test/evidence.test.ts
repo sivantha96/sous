@@ -79,3 +79,19 @@ test('an id merged and also dropped is decided twice; an undecided one is only m
   assert.deepEqual(decidedTwice(['a', 'b', 'c'], v), ['b']);
   assert.deepEqual(missingDecisions(['a', 'b', 'c'], v), ['b', 'c']);
 });
+
+test("a range's quote may be its first line, and a one-line range is a plain comment", () => {
+  const lines = Array.from({ length: 30 }, (_, i) => `line ${i + 1}`);
+  lines[9] = 'process.on("SIGTERM", stop);';
+  const rctx = { files: [{ filename: 'src/m.ts', patch: '@@ -1,30 +1,30 @@\n' + lines.map((l) => ` ${l}`).join('\n') }], tree: ['src/m.ts'], read: () => lines };
+  const counterEvidence = [{ path: 'src/m.ts', line: 1, quote: 'line 1' }];
+  const range: Finding = { severity: 'minor', path: 'src/m.ts', startLine: 10, line: 25, body: 'x', quote: 'process.on("SIGTERM"', counterEvidence };
+  const r = verifyEvidence([range], rctx);
+  assert.deepEqual(r.problems, []);
+  assert.equal(r.findings[0]!.line, 25);
+  assert.equal(r.findings[0]!.startLine, 10);
+  const one = verifyEvidence([{ ...range, startLine: 10, line: 10 }], rctx);
+  assert.deepEqual(one.problems, []);
+  assert.ok(!('startLine' in one.findings[0]!));
+  assert.equal(verifyEvidence([{ ...range, quote: 'nowhere at all' }], rctx).problems.length, 1);
+});

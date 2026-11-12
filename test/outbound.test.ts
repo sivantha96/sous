@@ -43,3 +43,11 @@ test('every memory file gets one canary, once', () => {
   assert.match(text, /^<!-- sous-canary-[0-9a-f]{16} -->\n- short\n$/);
   delete process.env.SOUS_HOME;
 });
+
+test('a URL quoted in code is text, not a link; the canary in code is still refused', () => {
+  assert.deepEqual(checkOutbound('the text reads `https://evil.example/x`', rules), []);
+  assert.equal(checkOutbound('see https://evil.example/x', rules).length, 1);
+  assert.deepEqual(checkOutbound('```\nfetch("https://evil.example/x")\n```', rules), []);
+  assert.equal(checkOutbound('`sous-canary-0123456789abcdef`', rules).length, 1);
+  assert.equal(checkOutbound('`globex`', rules).length, 1);
+});

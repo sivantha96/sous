@@ -126,3 +126,8 @@ export async function dismissOwn(gh: Gh, repo: string, n: number, reviewId: numb
   if (problems.length) throw new LintError(problems);
   await send(gh, 'PUT', `repos/${repo}/pulls/${n}/reviews/${reviewId}/dismissals`, { message, event: 'DISMISS' });
 }
+
+/** Refuses to post or mark a head the PR has moved past: comments would land on a stale commit. */
+export function assertHead(key: string, now: string, reviewed: string, what: 'posting' | 'marking'): void {
+  if (now !== reviewed) throw new Error(`${key} moved to ${now.slice(0, 12)} after this review started; not ${what} (the next run reviews the new head)`);
+}
