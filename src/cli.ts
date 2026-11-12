@@ -14,7 +14,7 @@ import { pollGate } from './gate.ts';
 import { get, getAll, ghFor, send, whoami } from './gh.ts';
 import { appendLine, focusPath, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
 import { buildDenylist, findLeaks } from './leak.ts';
-import { applyCorrections, isDuplicate, missingDecisions, verifyEvidence, type Correction } from './evidence.ts';
+import { applyCorrections, decidedTwice, isDuplicate, missingDecisions, verifyEvidence, type Correction } from './evidence.ts';
 import { assertHead, buildReview, dismissOwn, hasMarker, LintError, marker, postReview, signed, type Draft } from './post.ts';
 import { commitAt, gateFails, lensRecall, meanTotals, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
 import { assertOwnThread, reviewThreads, sousHasLastWord, threadIdFor, type PrComment } from './threads.ts';
@@ -522,13 +522,23 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   async decisions(args) {
     const [verifiedFile, ...lensFiles] = args;
     if (!verifiedFile || lensFiles.length === 0) throw new Error('usage: sous decisions <verified.json> <lens.json...>');
-    const ids = lensFiles.flatMap((f) => (JSON.parse(readFileSync(f, 'utf8')) as { candidates?: { id?: string }[] }).candidates ?? []).map((c, i) => c.id ?? `missing-id-${i}`);
+    const invalidJson: string[] = [];
+    const ids = lensFiles
+      .flatMap((f) => {
+        try {
+          return (JSON.parse(readFileSync(f, 'utf8')) as { candidates?: { id?: string }[] }).candidates ?? [];
+        } catch {
+          invalidJson.push(f);
+          return [];
+        }
+      })
+      .map((c, i) => c.id ?? `missing-id-${i}`);
     const verified = JSON.parse(readFileSync(verifiedFile, 'utf8')) as { kept?: { id?: string; merged?: string[]; counterEvidence?: unknown[] }[]; dropped?: { id?: string }[] };
     const noCounterEvidence = (verified.kept ?? []).filter((k) => !k.counterEvidence?.length).map((k) => k.id ?? '?');
     // Listed in `missing` too, so the one resend the review already makes covers them.
     const missing = [...missingDecisions(ids, verified), ...noCounterEvidence];
-    print({ candidates: ids.length, missing, noCounterEvidence });
-    return missing.length ? 1 : 0;
+    print({ candidates: ids.length, missing, decidedTwice: decidedTwice(ids, verified), noCounterEvidence, invalidJson });
+    return missing.length || invalidJson.length ? 1 : 0;
   },
 
   /** Replies in a thread Sous started. Never in a thread you or anyone else started. */
@@ -551,12 +561,23 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (isPaused(config, org)) throw new Error(`${org} is paused; not replying`);
     guardOutbound(org, profile, key, [text]);
     const gh = await ghFor(profile.ghAccount);
-    const body = signed(text, config.attribution, pr.head);
+    // Sign with the head the reply speaks about, not the one Sous last reviewed.
+    const pull = await get<{ head: { sha: string } }>(gh, `repos/${repo}/pulls/${n}`);
+    const body = signed(text, config.attribution, pull.head.sha);
     const posted = JSON.parse(await gh(['api', '-X', 'POST', `repos/${repo}/pulls/${n}/comments/${id}/replies`, '--input', '-'], JSON.stringify({ body }))) as { id: number };
     pr.replyIds.push(posted.id);
     saveState(org, state);
     logEvent(org, 'replied', { pr: key, thread: Number(id), reply: posted.id });
     print({ replied: posted.id });
+    return 0;
+  },
+
+  /** Each review thread's first comment id and whether it is resolved or outdated. Read-only. */
+  async threads(args) {
+    const [org, rawRepo, n] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
+    if (!org || !repo || !n) throw new Error('usage: sous threads <org> <owner/repo> <number>');
+    print(await reviewThreads(await ghFor(loadProfile(org).ghAccount), repo, Number(n)));
     return 0;
   },
 
@@ -591,7 +612,9 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const key = keyIn(state, prKey(repo, Number(n)));
     const pr = state.prs[key];
     if (!pr) throw new Error(`${key} is not in state`);
-    const ids = (values.replies ?? '').split(',').filter(Boolean).map(Number);
+    // `--replies 1 2 3` leaves 2 and 3 as positionals; take them too, comma- or space-separated.
+    const ids = [values.replies ?? '', ...positionals.slice(3)].join(',').split(/[,\s]+/).filter(Boolean).map(Number);
+    if (ids.some((i) => !Number.isInteger(i))) throw new Error('seen: reply ids must be numbers');
     pr.handled = [...new Set([...pr.handled, ...ids])];
     // Reactions: record today's counts on every Sous comment.
     const gh = await ghFor(profile.ghAccount);
@@ -614,11 +637,13 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const pr = state.prs[keyIn(state, prKey(repo, Number(n)))];
     if (!pr) throw new Error('not in state');
     const gh = await ghFor(profile.ghAccount);
+    const pull = await get<{ head: { sha: string } }>(gh, `repos/${repo}/pulls/${n}`);
     const reviews = await getAll<{ id: number; state: string; commit_id: string }>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`);
     const comments = await getAll<PrComment & { original_commit_id: string }>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`);
     const resolved = new Set((await reviewThreads(gh, repo, Number(n))).filter((t) => t.isResolved).map((t) => t.firstCommentId));
     print({
-      head: pr.head,
+      head: pull.head.sha,
+      reviewedHead: pr.head,
       reviews: reviews.filter((r) => pr.reviewIds.includes(r.id)).map((r) => ({ id: r.id, state: r.state, commit: r.commit_id })),
       blocking: reviews.filter((r) => pr.reviewIds.includes(r.id) && r.state === 'CHANGES_REQUESTED').map((r) => r.id),
       findings: comments
@@ -847,8 +872,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
     const defaultRepo = profile.ruleSources[0]?.split(':')[0];
-    const latestCache = new Map<string, string | null | 'deleted'>();
-    const latest = async (c: Cite): Promise<string | null | 'deleted'> => {
+    const latestCache = new Map<string, string | null | 'deleted' | 'branch'>();
+    const latest = async (c: Cite): Promise<string | null | 'deleted' | 'branch'> => {
       const repo = c.repo ?? defaultRepo;
       if (!repo) return null;
       const key = `${repo}:${c.path}`;
@@ -857,7 +882,12 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
         const exists = await get(gh, `repos/${repo}/contents/${c.path}`).then(() => true, () => false);
         latestCache.set(key, exists ? (commits[0]?.sha ?? null) : 'deleted');
       }
-      return latestCache.get(key)!;
+      const onMain = latestCache.get(key)!;
+      if (onMain !== 'deleted' || !c.sha) return onMain;
+      // A fact from a PR branch is missing on the default branch but may still hold at its pinned commit.
+      const pinned = `${key}@${c.sha}`;
+      if (!latestCache.has(pinned)) latestCache.set(pinned, await get(gh, `repos/${repo}/contents/${c.path}?ref=${c.sha}`).then(() => 'branch' as const, () => 'deleted' as const));
+      return latestCache.get(pinned)!;
     };
     const report: { at: string; state: string; cite: string }[] = [];
     let changed = 0;
@@ -878,7 +908,9 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
             changed++;
           }
         }
-        writeFileSync(path, lines.filter((l) => l !== '\u0000').join('\n'));
+        // An unchanged file is left alone, so an agent's next Edit doesn't fail on "modified since read".
+        const next = lines.filter((l) => l !== '\u0000').join('\n');
+        if (next !== readFileSync(path, 'utf8')) writeFileSync(path, next);
       }
     }
     if (changed) await commitMemory(orgDir(org), `facts: ${values.retire ? 'retire facts whose files are gone' : ''}${values.pin ? ' pin unpinned cites' : ''}`.trim());
