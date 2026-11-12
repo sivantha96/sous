@@ -44,3 +44,13 @@ test('a failed decisions check goes back to the verifier, never a hand fix', () 
   assert.match(review, /invalidJson/);
   assert.match(review, /decidedTwice/);
 });
+
+test('lenses get file lines and repo paths, not context-file copies', () => {
+  const body = (f: string) => agents.find(([n]) => n === f)![1];
+  assert.match(body('gatherer.md'), /never retype code/);
+  assert.match(body('gatherer.md'), /hunk header/);
+  assert.match(body('gatherer.md'), /never from an earlier context file/);
+  assert.match(body('lens.md'), /never a line of the context file/);
+  assert.match(body('lens.md'), /never the context file/);
+  assert.match(body('verifier.md'), /never a file in `~\/\.sous\/`/);
+});
