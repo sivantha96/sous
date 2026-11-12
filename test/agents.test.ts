@@ -12,3 +12,13 @@ test('an agent told to use Edit or Write has that tool', () => {
     if (/with (the )?Write\b/.test(body)) assert.ok(tools(body).includes('Write'), `${name} needs Write`);
   }
 });
+
+test('run, reply-judge, gatherer and lens text the orchestration relies on', () => {
+  const body = (f: string) => agents.find(([n]) => n === f)![1];
+  assert.match(readFileSync(new URL('../.claude/commands/run.md', import.meta.url), 'utf8'), /600000/);
+  assert.match(body('reply-judge.md'), /reply-<repo-name>-<n>-<sous-comment-id>/);
+  assert.match(body('reply-judge.md'), /by its code point/);
+  assert.match(body('gatherer.md'), /An empty search proves nothing/);
+  assert.match(body('gatherer.md'), /rev-parse HEAD/);
+  assert.match(body('lens.md'), /rev-parse HEAD/);
+});
