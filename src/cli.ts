@@ -24,7 +24,7 @@ import { createHash } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { diffTerms, factState, generalOnly, parseBullets, pinBullet, scopeMatches, searchMemory, type Bullet, type Cite } from './memory.ts';
 import { AI_CONFIG, CONVENTION_FILES, isNoise, sparsePatterns } from './noise.ts';
-import { askByHand, askedByHand, askedYou, emptyPr, keyIn, loadState, logEvent, prKey, readEvents, releaseLock, releasePrLock, saveState, takeLock, takePrLock, watchedOrg, type LoggedEvent } from './state.ts';
+import { askByHand, askedByHand, askedYou, emptyPr, keyIn, loadState, logEvent, prKey, readEvents, repoArg, releaseLock, releasePrLock, saveState, takeLock, takePrLock, watchedOrg, type LoggedEvent } from './state.ts';
 
 const run = promisify(execFile);
 
@@ -202,7 +202,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** Records a hand review (`/review <link>`), so `sous post` may post on a PR that never asked. Main session only. */
   async ask(args) {
-    const [org, repo, n] = args;
+    const [org, rawRepo, n] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n) throw new Error('usage: sous ask <org> <owner/repo> <number>');
     const watched = watchedOrg(loadConfig().orgs, org);
     if (!watched || !repo.toLowerCase().startsWith(`${watched.toLowerCase()}/`)) throw new Error(`${repo} is not in a watched org`);
@@ -214,7 +215,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   /** Releases the run lock `sous due --lock` took, when this session holds it. */
   /** Claims one PR for this session's review; exits 3 when another session is reviewing it. */
   async 'pr-lock'(args) {
-    const [org, repo, n, session] = args;
+    const [org, rawRepo, n, session] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n || !session) throw new Error('usage: sous pr-lock <org> <owner/repo> <number> <session id>');
     const key = prKey(repo, Number(n));
     const lock = takePrLock(org, key, session);
@@ -224,7 +226,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** Frees a PR this session claimed. */
   async 'pr-unlock'(args) {
-    const [org, repo, n, session] = args;
+    const [org, rawRepo, n, session] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n || !session) throw new Error('usage: sous pr-unlock <org> <owner/repo> <number> <session id>');
     const key = prKey(repo, Number(n));
     print({ pr: key, released: releasePrLock(org, key, session) });
@@ -259,7 +262,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** Polls CodeRabbit for one PR until it can be reviewed. One call stays under 7 minutes. */
   async gate(args) {
-    const [org, repo, n, head, startedAt] = args;
+    const [org, rawRepo, n, head, startedAt] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n || !head) throw new Error('usage: sous gate <org> <owner/repo> <number> <head> [run-started-at]');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
@@ -280,7 +284,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** Read-only checkout of the PR head. Nothing in it is ever run. */
   async checkout(args) {
-    const [org, repo, n, head, base] = args;
+    const [org, rawRepo, n, head, base] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n || !head || !base) throw new Error('usage: sous checkout <org> <owner/repo> <number> <head> <base>');
     const profile = loadProfile(org);
     const { stdout: token } = await run('gh', ['auth', 'token', '--user', profile.ghAccount]);
@@ -315,7 +320,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** Changed paths whose CODEOWNERS owners nobody asked to review, read from the base branch. */
   async owners(args) {
-    const [org, repo, n, base] = args;
+    const [org, rawRepo, n, base] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n || !base) throw new Error('usage: sous owners <org> <owner/repo> <number> <base>');
     const gh = await ghFor(loadProfile(org).ghAccount);
     const clone = join(sousHome(), 'cache', repo);
@@ -343,7 +349,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** The installed convention skills (org profile `skills`) whose paths the PR touches, with their files. */
   async skills(args) {
-    const [org, repo, n] = args;
+    const [org, rawRepo, n] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n) throw new Error('usage: sous skills <org> <owner/repo> <number>');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
@@ -358,7 +365,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
    */
   async prtext(args) {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { before: { type: 'string' }, exclude: { type: 'string' } } });
-    const [org, repo, n] = positionals;
+    const [org, rawRepo, n] = positionals;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n) throw new Error('usage: sous prtext <org> <owner/repo> <number> [--before <iso>] [--exclude <login>]');
     const gh = await ghFor(loadProfile(org).ghAccount);
     type C = { user: { login: string } | null; body: string | null; created_at?: string; submitted_at?: string; path?: string; line?: number | null };
@@ -497,7 +505,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   /** Records a head as reviewed with nothing to post. Requires the verifier's result, so a crash is never a clean review. */
   async mark(args) {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { verified: { type: 'string' } } });
-    const [org, repo, n, head] = positionals;
+    const [org, rawRepo, n, head] = positionals;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n || !head || !/^[0-9a-f]{40}$/.test(head) || !values.verified) throw new Error('usage: sous mark <org> <owner/repo> <number> <40-char head> --verified <verifier.json>');
     const v = JSON.parse(readFileSync(values.verified, 'utf8')) as { kept?: { ownerDecision?: boolean }[]; dropped?: unknown[] };
     if (!Array.isArray(v.kept) || !Array.isArray(v.dropped)) throw new Error('the verifier output has no kept and dropped lists; not marking the head as reviewed');
@@ -529,7 +538,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** Replies in a thread Sous started. Never in a thread you or anyone else started. */
   async reply(args) {
-    const [org, repo, n, id, file] = args;
+    const [org, rawRepo, n, id, file] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n || !id || !file) throw new Error('usage: sous reply <org> <owner/repo> <number> <sous-comment-id> <text-file>');
     const config = loadConfig();
     const profile = loadProfile(org);
@@ -557,7 +567,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** Resolves a thread Sous started, once its point is fixed or withdrawn. */
   async resolve(args) {
-    const [org, repo, n, id] = args;
+    const [org, rawRepo, n, id] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n || !id) throw new Error('usage: sous resolve <org> <owner/repo> <number> <sous-comment-id>');
     const profile = loadProfile(org);
     const state = loadState(org);
@@ -577,7 +588,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   /** Marks replies and reactions as judged, so the next run does not judge them again. */
   async seen(args) {
     const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { replies: { type: 'string' } } });
-    const [org, repo, n] = positionals;
+    const [org, rawRepo, n] = positionals;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n) throw new Error('usage: sous seen <org> <owner/repo> <number> [--replies id,id]');
     const profile = loadProfile(org);
     const state = loadState(org);
@@ -599,7 +611,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** Sous's record for one PR, with the live state of its reviews and threads. */
   async status(args) {
-    const [org, repo, n] = args;
+    const [org, rawRepo, n] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n) throw new Error('usage: sous status <org> <owner/repo> <number>');
     const profile = loadProfile(org);
     const state = loadState(org);
@@ -621,7 +634,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
   },
 
   async dismiss(args) {
-    const [org, repo, n, id, ...message] = args;
+    const [org, rawRepo, n, id, ...message] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n || !id || message.length === 0) throw new Error('usage: sous dismiss <org> <owner/repo> <number> <review-id> <message>');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
@@ -814,7 +828,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       print(Object.fromEntries([...hits.entries()].sort((a, b) => b[1].last.localeCompare(a[1].last))));
       return 0;
     }
-    const [org, repo, n] = args;
+    const [org, rawRepo, n] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n) throw new Error('usage: sous memory <org> <owner/repo> <number> | sous memory hits <org>');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
@@ -991,7 +1006,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** How deep to review: lenses, the missed pass and risk drivers, from the changed paths alone. */
   async plan(args) {
-    const [org, repo, n] = args;
+    const [org, rawRepo, n] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n) throw new Error('usage: sous plan <org> <owner/repo> <number>');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
@@ -1007,7 +1023,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
    * Never copies a private repo's code into a review of a public repo.
    */
   async links(args) {
-    const [org, repo, n] = args;
+    const [org, rawRepo, n] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n) throw new Error('usage: sous links <org> <owner/repo> <number>');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);

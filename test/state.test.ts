@@ -40,3 +40,10 @@ test('a copy that left a PR alone does not write it back', () => {
   saveState('p', stale);
   assert.equal(loadState('p').prs['p/r#1']!.head, 'y');
 });
+
+test('a bare repo name gets the org as its owner; a full name is kept', async () => {
+  const { repoArg } = await import('../src/state.ts');
+  assert.equal(repoArg('acme', 'api'), 'acme/api');
+  assert.equal(repoArg('acme', 'acme/api'), 'acme/api');
+  assert.equal(repoArg('a', 'other/x'), 'other/x');
+});
