@@ -17,7 +17,7 @@ Review $ARGUMENTS.
    - **Still open, and the push changed the lines it cites or the author replied:** when `sousHasLastWord` is false, reply once with what still fails at the new head, the input and the line; ask it as a question when it's not clear the author meant to cover it. Leave the thread open. When Sous already has the last word, say nothing: it waits for the author.
    - **Still open and untouched, with no reply:** nothing. The comment already says it.
    - **Withdrawn:** reply saying it is withdrawn and why, naming what asks for it (for example "withdrawing this, the plan asks for it in phase 1 step 3"), then `./bin/sous resolve` it.
-7. If it kept nothing new, run `./bin/sous mark <org> <repo> <n> <head> --verified <verified.json>`. Without a verifier result that parses, the head is never marked: the next run tries again. Otherwise run the `writer` subagent, which runs `sous post`. An earlier finding still open is not posted again.
+7. If `sous post` or `sous mark` says the PR moved, stop: post nothing, mark nothing, and say so in one line. If it kept nothing new, run `./bin/sous mark <org> <repo> <n> <head> --verified <verified.json>`. Without a verifier result that parses, the head is never marked: the next run tries again. Otherwise run the `writer` subagent, which runs `sous post`. An earlier finding still open is not posted again.
 8. Lift Sous's own block: when `sous status` shows `blocking` reviews, every earlier Major is fixed or withdrawn, and this run posted no new Major, run `./bin/sous dismiss <org> <repo> <n> <review-id> "fixed in <head12>, leaving approval to Sivantha"` for each.
 9. Run `./bin/sous tokens --org <org> --label review --session ${CLAUDE_SESSION_ID}`, then `/learn-round <org> <start time> <owner/repo>#<n>`.
 
