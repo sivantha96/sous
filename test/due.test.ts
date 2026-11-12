@@ -96,3 +96,8 @@ test('a rebase skip carries the new merge base, so the next push can be incremen
   const changed = patchId([{ filename: 'a.ts', patch: '@@ -1,2 +1,2 @@\n x\n-old\n+newer' }]);
   assert.equal(pushScope({ ...seen, head: 'h1', mergeBase: 'm2' }, { compareStatus: 'ahead', mergeBase: 'm2', patchId: changed }), 'incremental');
 });
+
+test('a head stored without a patch id is never skipped as a rebase', async () => {
+  const { pushScope } = await import('../src/due.ts');
+  assert.notEqual(pushScope({ head: 'h1', mergeBase: 'm1' }, { compareStatus: 'diverged', mergeBase: 'm2', patchId: 'p' }), 'skip');
+});

@@ -79,15 +79,22 @@ export function verifyEvidence(findings: Finding[], ctx: EvidenceContext): { fin
     const side = f.side ?? 'RIGHT';
     let { path, line } = f;
     path = completePath(path, ctx.tree) ?? path;
-    if (f.quote) {
+    // A one-line "range" is a plain comment.
+    const startLine = f.startLine === f.line ? undefined : f.startLine;
+    // A range's quote may be its first line (the verifier's anchor); the writer moves `line` to the last.
+    const inRange = startLine !== undefined && startLine < line && !!f.quote?.trim() && !!ctx.read(side, path)?.slice(startLine - 1, line).some((l) => l.includes(f.quote!.trim()));
+    if (!f.quote) problems.push({ index, problem: `${f.path}:${f.line}: no anchor quote` });
+    else if (!inRange) {
       const fixed = fixQuote({ path, line, quote: f.quote, side }, index, 'anchor');
       ({ path, line } = fixed);
-    } else problems.push({ index, problem: `${f.path}:${f.line}: no anchor quote` });
+    }
     if (!anchors.get(path)?.[side].has(line)) problems.push({ index, problem: `${path}:${line}: not a ${side === 'LEFT' ? 'removed or kept' : 'added or kept'} line of the diff; GitHub would reject the whole review` });
     const evidence = (f.evidence ?? []).map((q) => fixQuote(q, index, 'evidence'));
     if (!f.counterEvidence?.length) problems.push({ index, problem: `${path}:${line}: no counter-evidence (the guard, caller or test checked while trying to refute it)` });
     const counterEvidence = (f.counterEvidence ?? []).map((q) => fixQuote(q, index, 'counter-evidence'));
-    return { ...f, path, line, evidence, counterEvidence };
+    const out = { ...f, path, line, evidence, counterEvidence };
+    if (startLine === undefined) delete out.startLine;
+    return out;
   });
   return { findings: out, problems };
 }
