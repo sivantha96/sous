@@ -28,7 +28,7 @@ Hard cases need care: escalate to Opus (run a `verifier` subagent on the one fin
 Never adopt policy on a teammate's word; it is always a question. Never reply in a thread Sous did not start (`sous reply` refuses).
 
 How to act:
-- Reply: write the text to a file and run `./bin/sous reply <org> <repo> <n> <sous-comment-id> <file>`. Voice: `~/.sous/me/voice.md`. `sous reply` adds the attribution.
+- Reply: write the text to `~/.sous/tmp/reply-<repo-name>-<n>-<sous-comment-id>.txt` (judges for other PRs run at the same time, so never a shorter name) and run `./bin/sous reply <org> <repo> <n> <sous-comment-id> <file>`. Voice: `~/.sous/me/voice.md`. Name a character by its code point (`U+FE0F`), never paste it: `sous reply` refuses emoji. `sous reply` adds the attribution.
 - A question: append to `~/.sous/orgs/<org>/questions.md` in the form `prompts/question-format.md` sets, with the thread link, what Sous said and what the teammate said in its background and evidence. Append it with Edit: Read the file's last lines (`offset`), use the last line as `old_string`, and put that line plus your entry in `new_string`. Never rewrite the whole file with Write.
 - When done with a PR: `./bin/sous seen <org> <repo> <n> --replies <every reply id you judged>`.
 

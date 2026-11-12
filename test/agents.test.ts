@@ -13,6 +13,16 @@ test('an agent told to use Edit or Write has that tool', () => {
   }
 });
 
+test('run, reply-judge, gatherer and lens text the orchestration relies on', () => {
+  const body = (f: string) => agents.find(([n]) => n === f)![1];
+  assert.match(readFileSync(new URL('../.claude/commands/run.md', import.meta.url), 'utf8'), /600000/);
+  assert.match(body('reply-judge.md'), /reply-<repo-name>-<n>-<sous-comment-id>/);
+  assert.match(body('reply-judge.md'), /by its code point/);
+  assert.match(body('gatherer.md'), /An empty search proves nothing/);
+  assert.match(body('gatherer.md'), /rev-parse HEAD/);
+  assert.match(body('lens.md'), /rev-parse HEAD/);
+});
+
 test('the review judge scores posted findings once, and a correct nit by whether it is worth fixing', () => {
   const judge = agents.find(([n]) => n === 'review-judge.md')![1];
   assert.match(judge, /A correct nit/);
