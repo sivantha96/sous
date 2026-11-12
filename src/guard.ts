@@ -128,6 +128,8 @@ function checkGh(argv: string[], role: Role): Verdict {
 
 function checkSous(argv: string[], role: Role): Verdict {
   const sub = argv[1];
+  // Help only reads cli.ts's source and never runs a command.
+  if ((sub === 'help' && argv.length === 2) || (sub && argv.length === 3 && argv[2] === '--help')) return { ok: true };
   return sub && SOUS[role].includes(sub) ? { ok: true } : no(`sous ${sub ?? ''} is not allowed for this agent`);
 }
 
@@ -249,6 +251,8 @@ export function checkFocus(input: HookInput, home = sousHome()): Verdict {
  */
 const BLIND = new Set(['verifier', 'writer', 'review-judge']);
 const PR_TEXT = /\.pr-text\.md\b/;
+/** gh api routes that return a PR's or issue's own words (title, body, comments, reviews); `/files` is code and stays allowed. */
+const PR_TEXT_API = /\brepos\/[^/\s]+\/[^/\s]+\/(?:pulls|issues)\/(?:\d+(?:\/(?:comments|reviews|timeline))?|comments)(?=[?\s'"]|$)/;
 
 /** Added to a subagent's refused Bash call, so the next call is one that passes. */
 export const SHELL_HINT = ' (read files with the Read tool and a `limit`, search with `/usr/bin/grep` and `/usr/bin/find`, run git as `/usr/bin/git -C <path> <subcommand>`; one plain command per call)';
@@ -260,7 +264,7 @@ export function decide(input: HookInput): Verdict {
   const cwd = input.cwd ?? process.cwd();
   // Only what is read or run: a file's content may name the PR-text file without reading it.
   const { command, file_path, path, pattern, glob } = input.tool_input;
-  if (input.agent_type && BLIND.has(input.agent_type) && PR_TEXT.test([command, file_path, path, pattern, glob].join(' '))) return no('the verifier, writer and review-judge never read the PR text; judge from the code and the findings');
+  if (input.agent_type && BLIND.has(input.agent_type) && (PR_TEXT.test([command, file_path, path, pattern, glob].join(' ')) || PR_TEXT_API.test(command ?? ''))) return no('the verifier, writer and review-judge never read the PR text; judge from the code and the findings');
   if (input.tool_name === 'Bash') {
     const v = checkCommand(command ?? '', role, cwd);
     return v.ok || role === 'main' ? v : no(v.reason + SHELL_HINT);

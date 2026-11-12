@@ -58,7 +58,9 @@ export function checkOutbound(text: string, rules: OutboundRules): string[] {
     const m = new RegExp(`(?<![A-Za-z0-9])(${rules.otherOrgTerms.map(escape).join('|')})(?![A-Za-z0-9])`, 'i').exec(text);
     if (m) problems.push(`names "${m[1]}", which belongs to another org`);
   }
-  for (const raw of text.match(URL_RE) ?? []) {
+  // A URL inside a code span or fence renders as text, not a link; names and the canary are still checked above.
+  const prose = text.replace(/```[\s\S]*?```/g, '').replace(/`[^`\n]+`/g, '');
+  for (const raw of prose.match(URL_RE) ?? []) {
     let url: URL;
     try {
       url = new URL(raw);

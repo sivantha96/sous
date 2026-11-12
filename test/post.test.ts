@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildReview as build, dismissOwn, hasMarker, LintError, rightLines, signed, type Draft } from '../src/post.ts';
+import { assertHead, buildReview as build, dismissOwn, hasMarker, LintError, rightLines, signed, type Draft } from '../src/post.ts';
 import type { Gh } from '../src/gh.ts';
 
 const head = 'a'.repeat(40);
@@ -76,4 +76,9 @@ test('a range posts with start_line inside one hunk, and a broken range is refus
   assert.deepEqual([p.comments[0]!.start_line, p.comments[0]!.start_side, p.comments[0]!.line], [2, 'RIGHT', 4]);
   assert.throws(() => buildReview(draft([{ ...major, startLine: 4, line: 2 }]), { pending: false }), LintError);
   assert.throws(() => buildReview(draft([{ ...major, startLine: 1, line: 12 }]), { pending: false }), LintError);
+});
+
+test('post and mark refuse a head the PR has moved past', () => {
+  assert.throws(() => assertHead('o/r#1', 'bbbbbbbbbbbbbbbb', 'aaaa', 'posting'), /moved to bbbbbbbbbbbb .*not posting/);
+  assert.doesNotThrow(() => assertHead('o/r#1', 'aaaa', 'aaaa', 'marking'));
 });
