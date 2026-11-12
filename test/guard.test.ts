@@ -195,3 +195,24 @@ test('a path that only names bin/sous is not a call to it', () => {
   assert.ok(checkCommand('pwd; test -f bin/sous', 'main', '/tmp').ok);
   assert.ok(!checkCommand('cd x && /opt/sous/bin/sous due', 'main', '/tmp').ok);
 });
+
+test("the verifier, writer and review-judge can't read a PR's words through gh api; /files stays open", () => {
+  const as = (agent: string, command: string) => decide({ tool_name: 'Bash', agent_type: agent, cwd: '/tmp', tool_input: { command } } as Parameters<typeof decide>[0]).ok;
+  assert.ok(!as('verifier', 'gh api repos/a/b/pulls/272'));
+  assert.ok(!as('verifier', 'gh api repos/a/b/issues/272/comments'));
+  assert.ok(!as('writer', 'gh api repos/a/b/pulls/272/reviews --paginate'));
+  assert.ok(as('verifier', 'gh api repos/a/b/pulls/272/files'));
+  assert.ok(as('gatherer', 'gh api repos/a/b/pulls/272'));
+});
+
+test('every agent may read sous help, and nothing more through it', () => {
+  for (const role of ['reader', 'writer', 'reply-judge', 'reflector'] as const) {
+    assert.ok(checkCommand('./bin/sous help', role, '/tmp').ok, role);
+    assert.ok(checkCommand('./bin/sous post --help', role, '/tmp').ok, role);
+    assert.ok(!checkCommand('./bin/sous help; rm -rf x', role, '/tmp').ok, role);
+    assert.ok(!checkCommand('./bin/sous help && ./bin/sous post d.json', role, '/tmp').ok, role);
+    assert.ok(!checkCommand('./bin/sous help post extra', role, '/tmp').ok, role);
+  }
+  assert.ok(!checkCommand('./bin/sous post d.json --help', 'reader', '/tmp').ok);
+  assert.ok(!checkCommand('./bin/sous post d.json', 'reader', '/tmp').ok);
+});

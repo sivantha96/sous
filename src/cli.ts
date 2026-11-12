@@ -7,13 +7,14 @@ import { checkOutbound, ensureCanaries, otherOrgTerms } from './outbound.ts';
 import { hiddenInDiff, stripHidden } from './hidden.ts';
 import { CODEOWNERS_PATHS, parseCodeowners, unownedChanges } from './owners.ts';
 import { findSkill } from './skills.ts';
+import { helpFor } from './help.ts';
 import { findDue, patchId } from './due.ts';
 import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
 import { get, getAll, ghFor, send, whoami } from './gh.ts';
 import { appendLine, focusPath, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
 import { buildDenylist, findLeaks } from './leak.ts';
 import { applyCorrections, isDuplicate, missingDecisions, verifyEvidence, type Correction } from './evidence.ts';
-import { buildReview, dismissOwn, hasMarker, LintError, marker, postReview, signed, type Draft } from './post.ts';
+import { assertHead, buildReview, dismissOwn, hasMarker, LintError, marker, postReview, signed, type Draft } from './post.ts';
 import { commitAt, gateFails, lensRecall, meanTotals, parseAiReview, scoreCase, totals, type Case, type Gold, type Totals } from './replay.ts';
 import { assertOwnThread, reviewThreads, sousHasLastWord, threadIdFor, type PrComment } from './threads.ts';
 import { lintText } from './voice-lint.ts';
@@ -425,11 +426,12 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
 
     const files = await getAll<{ filename: string; patch?: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/files?per_page=100`);
-    const pull = await get<{ base: { ref: string }; state: string; user: { login: string } }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
+    const pull = await get<{ base: { ref: string }; head: { sha: string }; state: string; user: { login: string } }>(gh, `repos/${draft.repo}/pulls/${draft.number}`);
     const ownPr = pull.user.login === me;
     // The recipient is fixed by code, never by the draft: a watched org, an open PR, and one Sous already reviewed, Sivantha asked for by hand, or that asks for Sivantha's review by name or through a team.
     if (!watchedOrg(config.orgs, draft.org) || !draft.repo.toLowerCase().startsWith(`${draft.org.toLowerCase()}/`)) throw new Error(`${draft.repo} is not in a watched org; not posting`);
     if (pull.state !== 'open') throw new Error(`${key} is ${pull.state}; not posting`);
+    assertHead(key, pull.head.sha, draft.head, 'posting');
     const asked = async () =>
       askedYou(await get<{ users: { login: string }[]; teams: { slug: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`), me, draft.org, await getAll<{ slug: string; organization: { login: string } }>(gh, 'user/teams?per_page=100'));
     if (!ownPr && !state.prs[key] && !askedByHand(draft.org, key) && !(await asked())) throw new Error(`${key} never asked for your review, by name or through your teams, and isn't yours; not posting`);
@@ -495,7 +497,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (wasRequested && !(await requested()).includes(me)) {
       await send(gh, 'POST', `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`, { reviewers: [me] }).catch((e: Error) => logEvent(draft.org, 'request-not-restored', { pr: key, error: e.message.slice(0, 200) }));
     }
-    state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, reviewId], commentIds: [...prev.commentIds, ...commentIds], ...(base ? { mergeBase: base } : {}), patchId: patchId(files) };
+    state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, reviewId], commentIds: [...prev.commentIds, ...commentIds], ...(base ? { mergeBase: base } : {}), patchId: pull.head.sha === draft.head ? patchId(files) : undefined };
     saveState(draft.org, state);
     logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: keep.map((f) => ({ severity: f.severity, path: f.path, line: f.line, id: f.id, memory: f.memory ?? [] })) });
     print({ pr: key, reviewId, event: payload.event ?? 'PENDING', comments: commentIds.length, dropped });
@@ -513,6 +515,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (v.kept.some((k) => !k.ownerDecision)) throw new Error('the verifier kept findings; post them instead of marking');
     const state = loadState(org);
     const key = keyIn(state, prKey(repo, Number(n)));
+    const pull = await get<{ head: { sha: string } }>(await ghFor(loadProfile(org).ghAccount), `repos/${repo}/pulls/${n}`);
+    assertHead(key, pull.head.sha, head, 'marking');
     state.prs[key] = { ...(state.prs[key] ?? emptyPr(head)), head, reviewedAt: new Date().toISOString() };
     saveState(org, state);
     logEvent(org, 'reviewed', { pr: key, head, event: 'NONE', findings: [], droppedByVerifier: v.dropped.length });
@@ -1100,6 +1104,12 @@ function setPaused(org: string | undefined, on: boolean): number {
 }
 
 const [cmd, ...rest] = process.argv.slice(2);
+// Help reads this file's source and never runs a command, so every agent may call it.
+if (cmd === 'help' || rest.includes('--help')) {
+  const about = cmd === 'help' && !rest[0] ? null : helpFor(readFileSync(import.meta.filename, 'utf8'), cmd === 'help' ? rest[0]! : cmd!);
+  console.log(about ?? `usage: sous <${Object.keys(commands).join('|')}>\n./bin/sous <command> --help describes one command`);
+  process.exit(about || (cmd === 'help' && !rest[0]) ? 0 : 64);
+}
 const handler = cmd ? commands[cmd] : undefined;
 if (!handler) {
   console.error(`usage: sous <${Object.keys(commands).join('|')}>`);
