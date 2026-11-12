@@ -36,3 +36,26 @@ test('never started: wait inside the 30-minute grace, then review with a note', 
   assert.equal(r.action, 'review');
   assert.match((r as { note: string }).note, /did not run/);
 });
+
+test('the gate follows a push during the wait and gates the new head', async () => {
+  const { pollGate } = await import('../src/gate.ts');
+  const heads = ['a', 'b'];
+  const checksRead: string[] = [];
+  const gh = async (args: string[]): Promise<string> => {
+    const path = args.find((x) => x.startsWith('repos/')) ?? '';
+    if (/^repos\/o\/r\/commits\/\w+$/.test(path)) return JSON.stringify({ commit: { committer: { date: new Date().toISOString() } } });
+    if (path === 'repos/o/r/pulls/1') return JSON.stringify({ head: { sha: heads.length > 1 ? heads.shift() : heads[0] } });
+    const check = /^repos\/o\/r\/commits\/(\w+)\/check-runs/.exec(path);
+    if (check) {
+      checksRead.push(check[1]!);
+      return JSON.stringify({ check_runs: [{ name: 'CodeRabbit', status: check[1] === 'a' ? 'in_progress' : 'completed', conclusion: check[1] === 'a' ? null : 'success', started_at: '2026-01-01T00:00:00Z' }] });
+    }
+    if (path.startsWith('repos/o/r/issues/1/comments')) return '[]';
+    throw new Error(`unexpected ${path}`);
+  };
+  const profile = { org: 'o', ghAccount: 'me', postingMode: 'post' as const, coderabbit: { login: 'coderabbitai[bot]', checkName: 'CodeRabbit' }, knowledgeGraph: null, ruleSources: [], postSuggestions: false, linkHosts: [], skills: [] };
+  const r = await pollGate(gh, profile, 'o/r', 1, 'a', new Date(), { sleep: async () => undefined, budgetMs: 60 * 60_000 });
+  assert.equal(r.head, 'b');
+  assert.equal(r.action, 'review');
+  assert.deepEqual(checksRead, ['a', 'b']);
+});

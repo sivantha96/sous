@@ -66,3 +66,24 @@ export async function readCodeRabbit(gh: Gh, profile: Profile, repo: string, n: 
   const rateLimited = comments.some((c) => c.user?.login === cr.login && /rate limited by coderabbit/i.test(c.body));
   return { check: latest ? { status: latest.status, conclusion: latest.conclusion } : null, rateLimited };
 }
+
+/**
+ * Polls CodeRabbit until the PR can be reviewed, following the PR's head: after a push during the wait,
+ * the gate and the review are for the new head, never the one the run started with.
+ */
+export async function pollGate(gh: Gh, profile: Profile, repo: string, n: number, head: string, runStartedAt: Date, opts: { sleep: (seconds: number) => Promise<unknown>; budgetMs: number }): Promise<GateResult & { head: string }> {
+  const pushedAtOf = async (sha: string) => new Date((await get<{ commit: { committer: { date: string } } }>(gh, `repos/${repo}/commits/${sha}`)).commit.committer.date);
+  let pushedAt = await pushedAtOf(head);
+  const started = Date.now();
+  for (;;) {
+    const now = (await get<{ head: { sha: string } }>(gh, `repos/${repo}/pulls/${n}`)).head.sha;
+    if (now !== head) {
+      head = now;
+      pushedAt = await pushedAtOf(head);
+    }
+    const signal = await readCodeRabbit(gh, profile, repo, n, head, pushedAt);
+    const result = gate({ enabled: profile.coderabbit !== null, signal, pushedAt, runStartedAt, now: new Date() });
+    if (result.action !== 'wait' || Date.now() - started + POLL_SECONDS * 1000 > opts.budgetMs) return { ...result, head };
+    await opts.sleep(result.recheckSeconds);
+  }
+}

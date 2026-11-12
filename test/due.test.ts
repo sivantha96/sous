@@ -68,6 +68,35 @@ test('one PR that fails is skipped with its error; the others still run', async 
   assert.deepEqual(r.due, []);
 });
 
+test('patch id counts context rows: moving the PR\'s own lines against the base changes it', async () => {
+  const { patchId } = await import('../src/due.ts');
+  const before = patchId([{ filename: 'a', patch: '@@ -1,2 +1,3 @@\n c\n+x\n d' }]);
+  assert.notEqual(before, patchId([{ filename: 'a', patch: '@@ -1,2 +1,3 @@\n+x\n c\n d' }]));
+  assert.equal(before, patchId([{ filename: 'a', patch: '@@ -10,2 +10,3 @@\n c\n+x\n d' }]));
+});
+
+test('a rebase skip carries the new merge base, so the next push can be incremental', async () => {
+  const { findDue, patchId, pushScope } = await import('../src/due.ts');
+  const files = [{ filename: 'a.ts', patch: '@@ -1,2 +1,2 @@\n x\n-old\n+new' }];
+  const seen = { ...emptyPr('h0'), reviewedAt: '2026-01-01T00:00:00Z', mergeBase: 'm1', patchId: patchId(files) };
+  const gh = async (args: string[]): Promise<string> => {
+    const path = args.find((a) => a.startsWith('search/') || a.startsWith('repos/')) ?? '';
+    if (path.startsWith('search/')) return JSON.stringify([[{ number: 1, repository_url: 'https://api.github.com/repos/o/r' }]]);
+    if (path === 'repos/o/r/pulls/1') return JSON.stringify({ number: 1, title: 't', draft: false, user: { login: 'a', type: 'User' }, head: { sha: 'h1' }, base: { ref: 'main' } });
+    if (path.startsWith('repos/o/r/pulls/1/reviews')) return '[[]]';
+    if (path.startsWith('repos/o/r/pulls/1/files')) return JSON.stringify([files]);
+    if (path === 'repos/o/r/compare/h0...h1') return JSON.stringify({ status: 'diverged' });
+    if (path === 'repos/o/r/compare/main...h1') return JSON.stringify({ merge_base_commit: { sha: 'm2' } });
+    throw new Error(`unexpected ${path}`);
+  };
+  const profile = { org: 'o', ghAccount: 'me', postingMode: 'post' as const, coderabbit: null, knowledgeGraph: null, ruleSources: [], postSuggestions: false, linkHosts: [], skills: [] };
+  const r = await findDue(gh, profile, { prs: { 'o/r#1': seen } }, 'me', new Date());
+  assert.deepEqual(r.skipped, []);
+  assert.deepEqual(r.rebased, [{ pr: 'o/r#1', head: 'h1', mergeBase: 'm2' }]);
+  const changed = patchId([{ filename: 'a.ts', patch: '@@ -1,2 +1,2 @@\n x\n-old\n+newer' }]);
+  assert.equal(pushScope({ ...seen, head: 'h1', mergeBase: 'm2' }, { compareStatus: 'ahead', mergeBase: 'm2', patchId: changed }), 'incremental');
+});
+
 test('a head stored without a patch id is never skipped as a rebase', async () => {
   const { pushScope } = await import('../src/due.ts');
   assert.notEqual(pushScope({ head: 'h1', mergeBase: 'm1' }, { compareStatus: 'diverged', mergeBase: 'm2', patchId: 'p' }), 'skip');

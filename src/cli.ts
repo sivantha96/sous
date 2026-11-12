@@ -7,9 +7,10 @@ import { checkOutbound, ensureCanaries, otherOrgTerms } from './outbound.ts';
 import { hiddenInDiff, stripHidden } from './hidden.ts';
 import { CODEOWNERS_PATHS, parseCodeowners, unownedChanges } from './owners.ts';
 import { findSkill } from './skills.ts';
+import { fetchArgs, prefetchBase } from './checkout.ts';
 import { helpFor } from './help.ts';
 import { findDue, patchId } from './due.ts';
-import { gate, POLL_SECONDS, readCodeRabbit } from './gate.ts';
+import { pollGate } from './gate.ts';
 import { get, getAll, ghFor, send, whoami } from './gh.ts';
 import { appendLine, focusPath, meDir, orgDir, readJson, sousHome, writeJson } from './home.ts';
 import { buildDenylist, findLeaks } from './leak.ts';
@@ -186,7 +187,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
         const state = loadState(org);
         for (const r of rebased) {
           const pr = state.prs[r.pr];
-          if (pr) state.prs[r.pr] = { ...pr, head: r.head };
+          if (pr) state.prs[r.pr] = { ...pr, head: r.head, ...(r.mergeBase ? { mergeBase: r.mergeBase } : {}) };
           logEvent(org, 'rebase-skip', r);
         }
         saveState(org, state);
@@ -268,19 +269,8 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     if (!org || !repo || !n || !head) throw new Error('usage: sous gate <org> <owner/repo> <number> <head> [run-started-at]');
     const profile = loadProfile(org);
     const gh = await ghFor(profile.ghAccount);
-    const commit = await get<{ commit: { committer: { date: string } } }>(gh, `repos/${repo}/commits/${head}`);
-    const pushedAt = new Date(commit.commit.committer.date);
-    const runStartedAt = startedAt ? new Date(startedAt) : new Date();
-    const callStarted = Date.now();
-    for (;;) {
-      const signal = await readCodeRabbit(gh, profile, repo, Number(n), head, pushedAt);
-      const result = gate({ enabled: profile.coderabbit !== null, signal, pushedAt, runStartedAt, now: new Date() });
-      if (result.action !== 'wait' || Date.now() - callStarted + POLL_SECONDS * 1000 > 7 * 60_000) {
-        print(result);
-        return 0;
-      }
-      await sleep(result.recheckSeconds);
-    }
+    print(await pollGate(gh, profile, repo, Number(n), head, startedAt ? new Date(startedAt) : new Date(), { sleep, budgetMs: 7 * 60_000 }));
+    return 0;
   },
 
   /** Read-only checkout of the PR head. Nothing in it is ever run. */
@@ -301,7 +291,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     await run('git', ['config', '--local', '--unset-all', 'credential.helper'], { cwd: clone }).catch(() => undefined);
     await run('git', ['config', '--local', '--add', 'credential.helper', ''], { cwd: clone });
     await run('git', ['config', '--local', '--add', 'credential.helper', '!gh auth git-credential'], { cwd: clone });
-    await run('git', ['fetch', '-q', 'origin', `pull/${n}/head`, `+refs/heads/${base}:refs/remotes/origin/${base}`], { cwd: clone, env });
+    await run('git', fetchArgs(n), { cwd: clone, env });
     const tree = join(clone, '.worktrees', `${n}-${head.slice(0, 12)}`);
     // A checkout made before AI-config folders were excluded is rebuilt.
     if (existsSync(tree) && AI_CONFIG.some((p) => existsSync(join(tree, p)))) await run('git', ['worktree', 'remove', '--force', tree], { cwd: clone });
@@ -314,6 +304,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     }
     const { stdout: baseFiles } = await run('git', ['ls-tree', '--name-only', `origin/${base}`], { cwd: clone });
     const conventions = CONVENTION_FILES.filter((f) => baseFiles.split('\n').includes(f));
+    await prefetchBase(run, clone, base, [...conventions, ...AI_CONFIG], env);
     const { stdout: diff } = await run('git', ['diff', '-U0', '--no-ext-diff', `origin/${base}...${head}`], { cwd: clone, maxBuffer: 256 * 1024 * 1024 });
     print({ tree, baseRef: `origin/${base}`, readInstructionsWith: `git -C ${clone} show origin/${base}:<path>`, baseConventions: conventions, excludedFromCheckout: AI_CONFIG, hiddenCharacters: hiddenInDiff(diff) });
     return 0;
