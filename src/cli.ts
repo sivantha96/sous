@@ -777,7 +777,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const here = join(import.meta.dirname, '..');
     const engine = (await run('git', ['rev-parse', 'HEAD'], { cwd: here })).stdout.trim();
     const prompts = createHash('sha256');
-    for (const d of ['prompts/lenses', '.claude/agents', '.claude/commands']) for (const f of readdirSync(join(here, d)).sort()) prompts.update(readFileSync(join(here, d, f)));
+    for (const d of ['prompts/lenses', '.claude/agents', '.claude/commands']) for (const f of readdirSync(join(here, d), { withFileTypes: true }).filter((e) => e.isFile()).map((e) => e.name).sort()) prompts.update(readFileSync(join(here, d, f)));
     const memory = (await run('git', ['rev-parse', 'HEAD'], { cwd: orgDir(org) }).catch(() => ({ stdout: 'none' }))).stdout.trim();
     const stamp = new Date().toISOString().replace(/[-:]/g, '').slice(0, 15);
     const dirs = Array.from({ length: repeat }, (_, i) => join(orgDir(org), 'replay', 'runs', `${stamp}-${label.replace(/[^\w-]/g, '-')}-r${i + 1}`));
