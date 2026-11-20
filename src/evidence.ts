@@ -69,9 +69,9 @@ export function verifyEvidence(findings: Finding[], ctx: EvidenceContext): { fin
     const side = q.side ?? 'RIGHT';
     const path = completePath(q.path, paths) ?? q.path;
     if (!q.side) {
-      // No side given: a quote missing at the head may be removed code; accept it only on a LEFT line of the diff.
+      // No side given and the file is gone at the head (the PR deleted it): its quote can only be removed code, on a LEFT diff line.
       const head = ctx.read('RIGHT', path);
-      if (!head || locate(head, q.line, q.quote) === null) {
+      if (!head) {
         const base = ctx.read('LEFT', path);
         const at = base ? locate(base, q.line, q.quote) : null;
         if (at !== null && anchors.get(path)?.LEFT.has(at)) return { ...q, path, line: at, side: 'LEFT' };

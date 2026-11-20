@@ -275,21 +275,22 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** Read-only checkout of the PR head. Nothing in it is ever run. */
   async checkout(args) {
-    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { since: { type: 'string' } } });
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { since: { type: 'string' }, replay: { type: 'boolean' } } });
     const [org, rawRepo, n, head, baseArg] = positionals;
     const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
-    if (!org || !repo || !n || !head || !baseArg) throw new Error('usage: sous checkout <org> <owner/repo> <number> <head> <base> [--since <reviewed head>]');
+    if (!org || !repo || !n || !head || !baseArg) throw new Error('usage: sous checkout <org> <owner/repo> <number> <head> <base> [--since <reviewed head>] [--replay]');
     const profile = loadProfile(org);
     const { stdout: token } = await run('gh', ['auth', 'token', '--user', profile.ghAccount]);
     const env = { ...process.env, GH_TOKEN: token.trim() };
     // `due` read the PR at run start: it may have merged since, or been retargeted when its parent branch went.
-    const live = await get<{ state: string; merged_at: string | null; base: { ref: string } }>(await ghFor(profile.ghAccount), `repos/${repo}/pulls/${n}`);
-    if (live.state !== 'open') {
+    // A replay case is a PR as it was, usually merged since: use its own head and base, never the live PR.
+    const live = values.replay ? null : await get<{ state: string; merged_at: string | null; base: { ref: string } }>(await ghFor(profile.ghAccount), `repos/${repo}/pulls/${n}`);
+    if (live && live.state !== 'open') {
       print({ stop: live.merged_at ? 'merged' : 'closed', at: live.merged_at });
       return 3;
     }
-    const retargetedFrom = live.base.ref !== baseArg ? baseArg : undefined;
-    const base = live.base.ref;
+    const retargetedFrom = live && live.base.ref !== baseArg ? baseArg : undefined;
+    const base = live?.base.ref ?? baseArg;
     const clone = join(sousHome(), 'cache', repo);
     if (!existsSync(clone)) {
       mkdirSync(join(clone, '..'), { recursive: true });
@@ -300,7 +301,15 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     await run('git', ['config', '--local', '--unset-all', 'credential.helper'], { cwd: clone }).catch(() => undefined);
     await run('git', ['config', '--local', '--add', 'credential.helper', ''], { cwd: clone });
     await run('git', ['config', '--local', '--add', 'credential.helper', '!gh auth git-credential'], { cwd: clone });
-    await run('git', fetchArgs(n), { cwd: clone, env });
+    await run('git', fetchArgs(n, !values.replay), { cwd: clone, env });
+    if (values.replay && !(await run('git', ['rev-parse', '-q', '--verify', `refs/remotes/origin/${base}`], { cwd: clone }).then(() => true, () => false))) {
+      // A replay case's stacked base branch is deleted once it merges; its last head lives on as its own PR's ref.
+      const [owner] = repo.split('/');
+      const parent = (await get<{ number: number; head: { sha: string } }[]>(await ghFor(profile.ghAccount), `repos/${repo}/pulls?head=${encodeURIComponent(`${owner}:${base}`)}&state=all&per_page=1`))[0];
+      if (!parent) throw new Error(`base ${base} is gone and no PR had it as its head; can't replay this case`);
+      await run('git', ['fetch', '-q', 'origin', `pull/${parent.number}/head`], { cwd: clone, env });
+      await run('git', ['update-ref', `refs/remotes/origin/${base}`, parent.head.sha], { cwd: clone });
+    }
     const tree = join(clone, '.worktrees', `${n}-${head.slice(0, 12)}`);
     // A checkout made before AI-config folders were excluded is rebuilt.
     if (existsSync(tree) && AI_CONFIG.some((p) => existsSync(join(tree, p)))) await run('git', ['worktree', 'remove', '--force', tree], { cwd: clone });
@@ -317,7 +326,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     await prefetchBase(run, clone, base, [...conventions, ...AI_CONFIG], env);
     const { stdout: diff } = await run('git', ['diff', '-U0', '--no-ext-diff', `origin/${base}...${head}`], { cwd: clone, maxBuffer: 256 * 1024 * 1024 });
     // The whole diff, exactly as git prints it, for lenses to read; the gatherer points to it instead of copying patches.
-    const gitDiff = async (from: string) => (await run('git', ['diff', '--no-ext-diff', `origin/${base}...${from}`], { cwd: clone, env, maxBuffer: 256 * 1024 * 1024 })).stdout;
+    const gitDiff = async (from: string) => (await run('git', ['-c', 'core.quotePath=false', 'diff', '--no-ext-diff', `origin/${base}...${from}`], { cwd: clone, env, maxBuffer: 256 * 1024 * 1024 })).stdout;
     const full = await gitDiff(head);
     let scope: { changed: string[]; unchanged: string[] } | { full: true } | undefined;
     if (values.since) {
@@ -326,7 +335,14 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       scope = before === null ? { full: true } : changedPatches(before, full);
     }
     const keep = scope && 'changed' in scope ? new Set(scope.changed) : null;
-    const shown = keep ? full.split(/^(?=diff --git )/m).filter((p) => keep.has(/^diff --git a\/.+? b\/(.+)$/m.exec(p)?.[1] ?? '')).join('') : full;
+    // Lockfiles and generated output stay out of what lenses read; the gatherer lists them by name.
+    const shown = full
+      .split(/^(?=diff --git )/m)
+      .filter((p) => {
+        const name = /^diff --git a\/.+? b\/(.+)$/m.exec(p)?.[1] ?? '';
+        return !isNoise(name) && (!keep || keep.has(name));
+      })
+      .join('');
     const diffFile = join(orgDir(org), 'drafts', `${repo.split('/')[1]}-${n}-${head.slice(0, 12)}.diff`);
     mkdirSync(join(orgDir(org), 'drafts'), { recursive: true });
     writeFileSync(diffFile, shown);
@@ -656,7 +672,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const lastIsReply = last !== null && last.id !== Number(id) && sousHasLastWord(comments, pr, Number(id));
     if (values.amend) {
       // One reply per turn: rewrite the last one instead of adding a chain of corrections.
-      if (!last || !lastIsReply) throw new Error(`Sous has no last reply in thread ${id} to amend`);
+      if (!last || !lastIsReply || !pr.replyIds.includes(last.id)) throw new Error(`Sous has no last reply in thread ${id} to amend`);
       await send(gh, 'PATCH', `repos/${repo}/pulls/comments/${last.id}`, { body });
       logEvent(org, 'replied', { pr: key, thread: Number(id), reply: last.id, amended: true });
       print({ amended: last.id });
@@ -1194,8 +1210,9 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const profile = loadProfile(org);
     // An earlier review of this PR that never posted leaves drafts at the paths this one writes; move them aside.
     const drafts = join(orgDir(org), 'drafts');
-    const prefix = `${repo.split('/')[1]}-${n}-`;
-    const old = existsSync(drafts) ? readdirSync(drafts, { withFileTypes: true }).filter((e) => e.isFile() && e.name.startsWith(prefix)) : [];
+    // `<repo>-<n>-<head12>.` exactly, so repo `web` PR 1 never takes repo `web-1`'s files; checkout's diff stays.
+    const own = new RegExp(`^${repo.split('/')[1]!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-${n}-[0-9a-f]{12}\\.`);
+    const old = existsSync(drafts) ? readdirSync(drafts, { withFileTypes: true }).filter((e) => e.isFile() && own.test(e.name) && !e.name.endsWith('.diff')) : [];
     if (old.length) {
       const dest = join(drafts, `stale-${new Date().toISOString().slice(0, 10)}`);
       mkdirSync(dest, { recursive: true });
@@ -1219,7 +1236,9 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       // An incremental review is sized by the range it reads, kept to the PR's own files so a base merge doesn't count.
       const own = new Set(files.map((f) => f.filename));
       const head = (await get<{ head: { sha: string } }>(gh, `repos/${repo}/pulls/${n}`)).head.sha;
-      files = ((await get<{ files?: { filename: string; additions: number; deletions: number }[] }>(gh, `repos/${repo}/compare/${values.since}...${head}`)).files ?? []).filter((f) => own.has(f.filename));
+      const range = (await get<{ files?: { filename: string; additions: number; deletions: number }[] }>(gh, `repos/${repo}/compare/${values.since}...${head}`)).files ?? [];
+      // The compare API stops at 300 files; a cut-off list would under-size the review, so keep the whole PR then.
+      if (range.length < 300) files = range.filter((f) => own.has(f.filename));
     }
     const stacked = pull.base.ref !== (pull.head.repo?.default_branch ?? 'main');
     print({ ...plan(files, { stacked, orgRules: profile.ruleSources.length > 0, body: stripHidden(pull.body ?? '').text }), ...(old.length ? { staleDraftsMoved: old.length } : {}) });
