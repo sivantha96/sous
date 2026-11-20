@@ -64,6 +64,9 @@ test("a deleted file's lines are LEFT anchors, and evidence on removed code with
   assert.equal(r.findings[0]!.evidence![0]!.side, 'LEFT');
   const notInDiff = verifyEvidence([{ ...base, evidence: [{ path: 'src/a.ts', line: 2, quote: 'never anywhere' }] }], del);
   assert.equal(notInDiff.problems.length, 1);
+  // A claim that the head still has a line the PR removed fails; it is never relabelled LEFT.
+  const removed = verifyEvidence([{ ...base, evidence: [{ path: 'src/a.ts', line: 2, quote: 'if (!tenant) throw' }] }], del);
+  assert.equal(removed.problems.length, 1);
 });
 
 test('a repair changes only line, side, path or quote', () => {

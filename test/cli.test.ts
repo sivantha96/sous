@@ -67,11 +67,11 @@ test("plan moves an earlier review's drafts of the same PR aside, and leaves oth
   const c = cli();
   const drafts = join(c.orgDir, 'drafts');
   mkdirSync(join(drafts, 'r-1-links'), { recursive: true });
-  for (const f of ['r-1-abc.verified.json', 'r-1-abc.lens-correctness.json', 'r-10-abc.json']) writeFileSync(join(drafts, f), '{}');
+  for (const f of ['r-1-abcdef123456.verified.json', 'r-1-abcdef123456.lens-correctness.json', 'r-1-abcdef123456.diff', 'r-10-abcdef123456.json']) writeFileSync(join(drafts, f), '{}');
   const r = c.run(['plan', 'o', 'o/r', '1'], { 'repos/o/r/pulls/1': { body: '', base: { ref: 'main' }, head: { repo: { default_branch: 'main' } } }, 'repos/o/r/pulls/1/files': [] });
   assert.equal(r.code, 0, r.err);
   assert.equal(r.json().staleDraftsMoved, 2);
-  assert.deepEqual(readdirSync(drafts).filter((f) => !f.startsWith('stale-')).sort(), ['r-1-links', 'r-10-abc.json']);
+  assert.deepEqual(readdirSync(drafts).filter((f) => !f.startsWith('stale-')).sort(), ['r-1-abcdef123456.diff', 'r-1-links', 'r-10-abcdef123456.json']);
 });
 
 test('prtext --json lists reviews with empty bodies and replies with their thread, hidden text removed', () => {

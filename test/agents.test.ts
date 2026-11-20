@@ -45,6 +45,10 @@ test('a failed decisions check goes back to the verifier, never a hand fix', () 
   assert.match(review, /decidedTwice/);
 });
 
+test('eval checks out replay cases with --replay, since their PRs have merged', () => {
+  assert.match(readFileSync(new URL('../.claude/commands/eval.md', import.meta.url), 'utf8'), /sous checkout <org> <repo> <number> <head> <base> --replay/);
+});
+
 test('lenses get file lines and repo paths, not context-file copies', () => {
   const body = (f: string) => agents.find(([n]) => n === f)![1];
   // Patches reach lenses only through checkout's diff file, as git printed them; the gatherer never copies them.
