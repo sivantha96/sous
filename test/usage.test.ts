@@ -29,6 +29,15 @@ test('an agent ran from its first to its last timestamp; lines without one are s
   assert.equal(spanSeconds(at('2026-11-05T10:00:00Z')), 0);
 });
 
+test('a floor costs only what came after it, so a second review in one session is counted alone', async () => {
+  const { spanSeconds, usageByModel } = await import('../src/usage.ts');
+  const reply = (id: string, t: string) => JSON.stringify({ timestamp: t, message: { id, model: 'claude-opus-5-5', usage: { input_tokens: 10, output_tokens: 1 } } });
+  const log = [reply('a', '2026-11-05T10:00:00Z'), reply('b', '2026-11-05T10:05:00Z'), reply('c', '2026-11-05T14:00:00Z'), reply('d', '2026-11-05T14:10:00Z')].join('\n');
+  const floor = Date.parse('2026-11-05T14:00:00Z');
+  assert.equal(spanSeconds(log, floor), 600);
+  assert.equal(usageByModel(log, floor)['claude-opus-5-5']!.input, usageByModel(log)['claude-opus-5-5']!.input / 2);
+});
+
 test('transcripts sit under the config dir, one folder per working directory', async () => {
   const { projectsDir } = await import('../src/usage.ts');
   assert.equal(projectsDir('/h/me/sous', '/h/me/.claude-work'), '/h/me/.claude-work/projects/-h-me-sous');

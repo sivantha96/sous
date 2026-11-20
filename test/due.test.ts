@@ -39,7 +39,7 @@ test('patch id ignores line numbers, so a rebase that moves nothing keeps it', a
   assert.notEqual(a, changed);
   assert.equal(pushScope({ head: 'h1', patchId: a }, { compareStatus: 'diverged', mergeBase: 'm2', patchId: moved }), 'skip');
   assert.equal(pushScope({ head: 'h1', mergeBase: 'm1', patchId: a }, { compareStatus: 'ahead', mergeBase: 'm1', patchId: changed }), 'incremental');
-  assert.equal(pushScope({ head: 'h1', mergeBase: 'm1', patchId: a }, { compareStatus: 'ahead', mergeBase: 'm2', patchId: changed }), 'full');
+  assert.equal(pushScope({ head: 'h1', mergeBase: 'm1', patchId: a }, { compareStatus: 'ahead', mergeBase: 'm2', patchId: changed }), 'incremental', 'a base merge is incremental: checkout --since compares each file\'s own patch');
   assert.equal(pushScope({ head: 'h1', mergeBase: 'm1', patchId: a }, { compareStatus: 'diverged', mergeBase: 'm1', patchId: changed }), 'full');
 });
 
@@ -100,4 +100,25 @@ test('a rebase skip carries the new merge base, so the next push can be incremen
 test('a head stored without a patch id is never skipped as a rebase', async () => {
   const { pushScope } = await import('../src/due.ts');
   assert.notEqual(pushScope({ head: 'h1', mergeBase: 'm1' }, { compareStatus: 'diverged', mergeBase: 'm2', patchId: 'p' }), 'skip');
+});
+
+test('your pending review skips the PR as blocked, since GitHub allows one per person and Sous posts as you', async () => {
+  const { findDue } = await import('../src/due.ts');
+  const gh = async (args: string[]): Promise<string> => {
+    const path = args.find((a) => a.startsWith('search/') || a.startsWith('repos/')) ?? '';
+    if (path.startsWith('search/')) return JSON.stringify([[{ number: 1, repository_url: 'https://api.github.com/repos/o/r' }]]);
+    if (path === 'repos/o/r/pulls/1') return JSON.stringify({ number: 1, title: 't', draft: false, user: { login: 'a', type: 'User' }, head: { sha: 'h' }, base: { ref: 'main' } });
+    if (path.startsWith('repos/o/r/pulls/1/reviews')) return JSON.stringify([[{ id: 9, user: { login: 'me' }, state: 'PENDING', commit_id: 'abcdef1234', body: '' }]]);
+    return JSON.stringify([[]]);
+  };
+  const profile = { org: 'o', ghAccount: 'me', postingMode: 'post' as const, coderabbit: null, knowledgeGraph: null, ruleSources: [], postSuggestions: false, linkHosts: [], skills: [] };
+  const r = await findDue(gh, profile, { prs: {} }, 'me', new Date());
+  assert.deepEqual(r.due, []);
+  assert.match(r.skipped[0]!.why, /^blocked: your pending review 9 \(commit abcdef12\)/);
+});
+
+test("an empty COMMENTED review is GitHub's wrapper for a thread reply, not your review of the head", async () => {
+  const { yourLatestHead } = await import('../src/due.ts');
+  assert.equal(yourLatestHead([{ user: { login: 'me' }, commit_id: 'h', body: '', submitted_at: '2026-11-01', state: 'COMMENTED' }], 'me'), null);
+  assert.equal(yourLatestHead([{ user: { login: 'me' }, commit_id: 'h', body: '', submitted_at: '2026-11-01', state: 'APPROVED' }], 'me'), 'h');
 });

@@ -1,13 +1,13 @@
 import { execFile, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { join, matchesGlob } from 'node:path';
 import { parseArgs, promisify } from 'node:util';
 import { isPaused, loadConfig, loadProfile, saveConfig, saveProfile, type Config, type Profile } from './config.ts';
 import { checkOutbound, ensureCanaries, otherOrgTerms } from './outbound.ts';
 import { hiddenInDiff, stripHidden } from './hidden.ts';
 import { CODEOWNERS_PATHS, parseCodeowners, unownedChanges } from './owners.ts';
 import { findSkill } from './skills.ts';
-import { fetchArgs, prefetchBase } from './checkout.ts';
+import { changedPatches, conventionsFor, fetchArgs, generatedGlobs, prefetchBase } from './checkout.ts';
 import { helpFor } from './help.ts';
 import { findDue, patchId } from './due.ts';
 import { pollGate } from './gate.ts';
@@ -275,12 +275,21 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** Read-only checkout of the PR head. Nothing in it is ever run. */
   async checkout(args) {
-    const [org, rawRepo, n, head, base] = args;
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { since: { type: 'string' } } });
+    const [org, rawRepo, n, head, baseArg] = positionals;
     const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
-    if (!org || !repo || !n || !head || !base) throw new Error('usage: sous checkout <org> <owner/repo> <number> <head> <base>');
+    if (!org || !repo || !n || !head || !baseArg) throw new Error('usage: sous checkout <org> <owner/repo> <number> <head> <base> [--since <reviewed head>]');
     const profile = loadProfile(org);
     const { stdout: token } = await run('gh', ['auth', 'token', '--user', profile.ghAccount]);
     const env = { ...process.env, GH_TOKEN: token.trim() };
+    // `due` read the PR at run start: it may have merged since, or been retargeted when its parent branch went.
+    const live = await get<{ state: string; merged_at: string | null; base: { ref: string } }>(await ghFor(profile.ghAccount), `repos/${repo}/pulls/${n}`);
+    if (live.state !== 'open') {
+      print({ stop: live.merged_at ? 'merged' : 'closed', at: live.merged_at });
+      return 3;
+    }
+    const retargetedFrom = live.base.ref !== baseArg ? baseArg : undefined;
+    const base = live.base.ref;
     const clone = join(sousHome(), 'cache', repo);
     if (!existsSync(clone)) {
       mkdirSync(join(clone, '..'), { recursive: true });
@@ -302,11 +311,26 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       await run('git', ['sparse-checkout', 'set', '--no-cone', ...sparsePatterns()], { cwd: tree });
       await run('git', ['checkout', '-q', '--detach', head], { cwd: tree });
     }
-    const { stdout: baseFiles } = await run('git', ['ls-tree', '--name-only', `origin/${base}`], { cwd: clone });
-    const conventions = CONVENTION_FILES.filter((f) => baseFiles.split('\n').includes(f));
+    const { stdout: changedNames } = await run('git', ['diff', '--name-only', `origin/${base}...${head}`], { cwd: clone, env });
+    const { stdout: baseFiles } = await run('git', ['ls-tree', '-r', '--name-only', `origin/${base}`], { cwd: clone });
+    const conventions = conventionsFor(baseFiles.split('\n').filter(Boolean), changedNames.split('\n').filter(Boolean));
     await prefetchBase(run, clone, base, [...conventions, ...AI_CONFIG], env);
     const { stdout: diff } = await run('git', ['diff', '-U0', '--no-ext-diff', `origin/${base}...${head}`], { cwd: clone, maxBuffer: 256 * 1024 * 1024 });
-    print({ tree, baseRef: `origin/${base}`, readInstructionsWith: `git -C ${clone} show origin/${base}:<path>`, baseConventions: conventions, excludedFromCheckout: AI_CONFIG, hiddenCharacters: hiddenInDiff(diff) });
+    // The whole diff, exactly as git prints it, for lenses to read; the gatherer points to it instead of copying patches.
+    const gitDiff = async (from: string) => (await run('git', ['diff', '--no-ext-diff', `origin/${base}...${from}`], { cwd: clone, env, maxBuffer: 256 * 1024 * 1024 })).stdout;
+    const full = await gitDiff(head);
+    let scope: { changed: string[]; unchanged: string[] } | { full: true } | undefined;
+    if (values.since) {
+      // Incremental: only files whose own patch changed since the reviewed head; a base merge alone changes none.
+      const before = await run('git', ['fetch', '-q', 'origin', values.since], { cwd: clone, env }).then(() => gitDiff(values.since!)).catch(() => null);
+      scope = before === null ? { full: true } : changedPatches(before, full);
+    }
+    const keep = scope && 'changed' in scope ? new Set(scope.changed) : null;
+    const shown = keep ? full.split(/^(?=diff --git )/m).filter((p) => keep.has(/^diff --git a\/.+? b\/(.+)$/m.exec(p)?.[1] ?? '')).join('') : full;
+    const diffFile = join(orgDir(org), 'drafts', `${repo.split('/')[1]}-${n}-${head.slice(0, 12)}.diff`);
+    mkdirSync(join(orgDir(org), 'drafts'), { recursive: true });
+    writeFileSync(diffFile, shown);
+    print({ tree, diffFile, ...(scope ? { scope } : {}), baseRef: `origin/${base}`, ...(retargetedFrom ? { baseRetargetedFrom: retargetedFrom } : {}), readInstructionsWith: `git -C ${clone} show origin/${base}:<path>`, baseConventions: conventions, excludedFromCheckout: AI_CONFIG, hiddenCharacters: hiddenInDiff(diff) });
     return 0;
   },
 
@@ -356,17 +380,18 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
    * gatherer's `.pr-text.md`. Replay passes --before and --exclude so the answers stay out.
    */
   async prtext(args) {
-    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { before: { type: 'string' }, exclude: { type: 'string' } } });
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { before: { type: 'string' }, exclude: { type: 'string' }, json: { type: 'boolean' } } });
     const [org, rawRepo, n] = positionals;
     const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
     if (!org || !repo || !n) throw new Error('usage: sous prtext <org> <owner/repo> <number> [--before <iso>] [--exclude <login>]');
     const gh = await ghFor(loadProfile(org).ghAccount);
-    type C = { user: { login: string } | null; body: string | null; created_at?: string; submitted_at?: string; path?: string; line?: number | null };
+    type C = { id?: number; in_reply_to_id?: number; state?: string; updated_at?: string; reactions?: { total_count: number }; user: { login: string } | null; body: string | null; created_at?: string; submitted_at?: string; path?: string; line?: number | null };
     const pull = await get<{ title: string; body: string | null; labels: { name: string }[] }>(gh, `repos/${repo}/pulls/${n}`);
     const keep = (c: C) => c.user?.login !== values.exclude && (!values.before || (c.created_at ?? c.submitted_at ?? '') < values.before);
+    const reviews = await getAll<C>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`);
     const sources: [string, C[]][] = [
       ['Conversation', await getAll<C>(gh, `repos/${repo}/issues/${n}/comments?per_page=100`)],
-      ['Review bodies', (await getAll<C>(gh, `repos/${repo}/pulls/${n}/reviews?per_page=100`)).filter((r) => r.body)],
+      ['Review bodies', reviews.filter((r) => r.body)],
       ['Inline comments', await getAll<C>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`)],
     ];
     let removed = 0;
@@ -375,6 +400,12 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       removed += r.removed;
       return r.text.trim();
     };
+    if (values.json) {
+      // Every comment and review with ids, for the signal collector: one sous call instead of bare gh api reads.
+      const pick = (c: C) => ({ id: c.id, user: c.user?.login ?? 'ghost', inReplyTo: c.in_reply_to_id, state: c.state, at: c.created_at ?? c.submitted_at, updatedAt: c.updated_at, path: c.path, line: c.line, reactions: c.reactions?.total_count ?? 0, sous: hasMarker(c.body), body: clean(c.body) });
+      print({ conversation: sources[0]![1].filter(keep).map(pick), reviews: reviews.filter(keep).map(pick), inline: sources[2]![1].filter(keep).map(pick), hiddenRemoved: removed });
+      return 0;
+    }
     const parts = [`# ${clean(pull.title)}`, `Labels: ${pull.labels.map((l) => l.name).join(', ') || 'none'}`, clean(pull.body) || '(no description)'];
     for (const [heading, items] of sources) {
       const shown = items.filter(keep);
@@ -405,9 +436,11 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const prev = state.prs[key] ?? emptyPr(draft.head);
 
     // A post whose response was lost already exists on this head: adopt it instead of posting twice.
-    for (const r of await getAll<{ id: number; user: { login: string } | null; commit_id: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/reviews?per_page=100`)) {
+    for (const r of await getAll<{ id: number; user: { login: string } | null; commit_id: string; state?: string }>(gh, `repos/${draft.repo}/pulls/${draft.number}/reviews?per_page=100`)) {
+      if (r.user?.login === me && r.state === 'PENDING' && !pending) throw new Error(`your pending review ${r.id} on ${key} blocks posting (GitHub allows one per person); submit or delete it, then run sous post again`);
       if (r.user?.login !== me || r.commit_id !== draft.head || prev.reviewIds.includes(r.id)) continue;
-      const comments = await get<{ id: number; body: string }[]>(gh, `repos/${draft.repo}/pulls/${draft.number}/reviews/${r.id}/comments?per_page=100`);
+      // A lost post makes top-level comments only; a Sous reply carries the same marker but is never one.
+      const comments = (await get<{ id: number; body: string; in_reply_to_id?: number }[]>(gh, `repos/${draft.repo}/pulls/${draft.number}/reviews/${r.id}/comments?per_page=100`)).filter((c) => !c.in_reply_to_id && !prev.replyIds.includes(c.id));
       if (!comments.some((c) => c.body.includes(marker(draft.head)))) continue;
       state.prs[key] = { ...prev, head: draft.head, reviewedAt: new Date().toISOString(), reviewIds: [...prev.reviewIds, r.id], commentIds: [...prev.commentIds, ...comments.map((c) => c.id)] };
       saveState(draft.org, state);
@@ -422,6 +455,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     // The recipient is fixed by code, never by the draft: a watched org, an open PR, and one Sous already reviewed, Sivantha asked for by hand, or that asks for Sivantha's review by name or through a team.
     if (!watchedOrg(config.orgs, draft.org) || !draft.repo.toLowerCase().startsWith(`${draft.org.toLowerCase()}/`)) throw new Error(`${draft.repo} is not in a watched org; not posting`);
     if (pull.state !== 'open') throw new Error(`${key} is ${pull.state}; not posting`);
+    if (pull.head.sha !== draft.head) logEvent(draft.org, 'moved', { pr: key, head: draft.head, now: pull.head.sha, stage: 'post' });
     assertHead(key, pull.head.sha, draft.head, 'posting');
     const asked = async () =>
       askedYou(await get<{ users: { login: string }[]; teams: { slug: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`), me, draft.org, await getAll<{ slug: string; organization: { login: string } }>(gh, 'user/teams?per_page=100'));
@@ -439,7 +473,9 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const tree = (git('ls-tree', '-r', '--name-only', draft.head) ?? '').split('\n').filter(Boolean);
     const read = (side: 'RIGHT' | 'LEFT', path: string): string[] | null => {
       const sha = side === 'LEFT' ? base : draft.head;
-      const text = sha ? git('show', `${sha}:${path}`) : null;
+      let text = sha ? git('show', `${sha}:${path}`) : null;
+      // Rule files are listed and read at the base tip (checkout's baseConventions); one added after the branch was cut is only there.
+      if (text === null && side === 'LEFT') text = git('show', `origin/${pull.base.ref}:${path}`);
       return text === null ? null : text.split('\n');
     };
 
@@ -483,7 +519,15 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     guardOutbound(draft.org, profile, key, payload.comments.map((c) => c.body));
     const requested = async () => (await get<{ users: { login: string }[] }>(gh, `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`)).users.map((u) => u.login);
     const wasRequested = (await requested()).includes(me);
-    const { reviewId, commentIds } = await postReview(gh, { ...draft, findings: keep }, payload);
+    let posted;
+    try {
+      posted = await postReview(gh, { ...draft, findings: keep }, payload);
+    } catch (e) {
+      // A refused post is a problem the retro must show, or the next run spends a whole review to hit it again.
+      logEvent(draft.org, 'post-failed', { pr: key, head: draft.head, error: (e as Error).message.slice(0, 300) });
+      throw e;
+    }
+    const { reviewId, commentIds } = posted;
     // Submitting a review removes the request from your queue; give it back so the PR still waits on you.
     if (wasRequested && !(await requested()).includes(me)) {
       await send(gh, 'POST', `repos/${draft.repo}/pulls/${draft.number}/requested_reviewers`, { reviewers: [me] }).catch((e: Error) => logEvent(draft.org, 'request-not-restored', { pr: key, error: e.message.slice(0, 200) }));
@@ -493,6 +537,26 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     logEvent(draft.org, 'reviewed', { pr: key, head: draft.head, event: payload.event ?? 'PENDING', reviewId, findings: keep.map((f) => ({ severity: f.severity, path: f.path, line: f.line, id: f.id, memory: f.memory ?? [] })) });
     print({ pr: key, reviewId, event: payload.event ?? 'PENDING', comments: commentIds.length, dropped });
     return 0;
+  },
+
+  /** Whether the PR still sits at the head this review read. Exit 4 and a `moved` event when it doesn't, so a run stops before spending the next stage. */
+  async headcheck(args) {
+    const [org, rawRepo, n, head, stage = 'review'] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
+    if (!org || !repo || !n || !head) throw new Error('usage: sous headcheck <org> <owner/repo> <number> <head> [stage]');
+    const pull = await get<{ head: { sha: string }; state: string }>(await ghFor(loadProfile(org).ghAccount), `repos/${repo}/pulls/${n}`);
+    const key = keyIn(loadState(org), prKey(repo, Number(n)));
+    if (pull.state !== 'open') {
+      print({ moved: true, state: pull.state });
+      return 4;
+    }
+    if (pull.head.sha.startsWith(head) || head.startsWith(pull.head.sha)) {
+      print({ moved: false });
+      return 0;
+    }
+    logEvent(org, 'moved', { pr: key, head, now: pull.head.sha, stage });
+    print({ moved: true, now: pull.head.sha });
+    return 4;
   },
 
   /** Records a head as reviewed with nothing to post. Requires the verifier's result, so a crash is never a clean review. */
@@ -507,6 +571,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     const state = loadState(org);
     const key = keyIn(state, prKey(repo, Number(n)));
     const pull = await get<{ head: { sha: string } }>(await ghFor(loadProfile(org).ghAccount), `repos/${repo}/pulls/${n}`);
+    if (pull.head.sha !== head) logEvent(org, 'moved', { pr: key, head, now: pull.head.sha, stage: 'mark' });
     assertHead(key, pull.head.sha, head, 'marking');
     state.prs[key] = { ...(state.prs[key] ?? emptyPr(head)), head, reviewedAt: new Date().toISOString() };
     saveState(org, state);
@@ -519,14 +584,30 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
    * Fails unless every lens candidate id has exactly one verifier decision and every kept finding
    * still has counter-evidence (`sous post` refuses one without, and a repair can't add it back).
    */
+  async candidates(args) {
+    if (args.length === 0) throw new Error('usage: sous candidates <lens.json...>');
+    const lines: string[] = [];
+    for (const f of args) {
+      const lens = JSON.parse(readFileSync(f, 'utf8')) as { lens?: string; candidates?: { id?: string; severity?: string; path?: string; line?: number; claim?: string; body?: string }[] };
+      const name = lens.lens ?? f;
+      if (!lens.candidates?.length) lines.push(`${name}: none`);
+      for (const c of lens.candidates ?? []) lines.push(`${name} ${c.id ?? '?'} ${c.severity ?? '?'} ${c.path ?? '?'}:${c.line ?? '?'} ${(c.claim ?? c.body ?? '').split(/(?<=\.)\s/)[0]}`);
+    }
+    console.log(lines.join('\n'));
+    return 0;
+  },
+
   async decisions(args) {
     const [verifiedFile, ...lensFiles] = args;
     if (!verifiedFile || lensFiles.length === 0) throw new Error('usage: sous decisions <verified.json> <lens.json...>');
     const invalidJson: string[] = [];
+    const lensNames: string[] = [];
     const ids = lensFiles
       .flatMap((f) => {
         try {
-          return (JSON.parse(readFileSync(f, 'utf8')) as { candidates?: { id?: string }[] }).candidates ?? [];
+          const lens = JSON.parse(readFileSync(f, 'utf8')) as { lens?: string; candidates?: { id?: string }[] };
+          if (lens.lens) lensNames.push(lens.lens);
+          return lens.candidates ?? [];
         } catch {
           invalidJson.push(f);
           return [];
@@ -535,17 +616,22 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       .map((c, i) => c.id ?? `missing-id-${i}`);
     const verified = JSON.parse(readFileSync(verifiedFile, 'utf8')) as { kept?: { id?: string; merged?: string[]; counterEvidence?: unknown[] }[]; dropped?: { id?: string }[] };
     const noCounterEvidence = (verified.kept ?? []).filter((k) => !k.counterEvidence?.length).map((k) => k.id ?? '?');
+    // `sous post` quotes only repo files: a context file, PR text or memory path is refused there.
+    const outsideRepo = (verified.kept ?? []).flatMap((k) => [...((k as { evidence?: { path?: string }[] }).evidence ?? []), ...((k.counterEvidence ?? []) as { path?: string }[])].filter((q) => q.path && (q.path.startsWith('/') || q.path.startsWith('~') || q.path.includes('.sous/'))).map((q) => `${k.id ?? '?'} ${q.path}`));
     // Listed in `missing` too, so the one resend the review already makes covers them.
-    const missing = [...missingDecisions(ids, verified), ...noCounterEvidence];
-    print({ candidates: ids.length, missing, decidedTwice: decidedTwice(ids, verified), noCounterEvidence, invalidJson });
-    return missing.length || invalidJson.length ? 1 : 0;
+    const missing = [...new Set([...missingDecisions(ids, verified), ...noCounterEvidence, ...outsideRepo.map((o) => o.split(' ')[0]!)])];
+    // Two files with one lens name (round two saved as `breaker`) means one overwrote or shadows the other.
+    const duplicateLens = [...new Set(lensNames.filter((l, i) => lensNames.indexOf(l) !== i))];
+    print({ candidates: ids.length, missing, decidedTwice: decidedTwice(ids, verified), noCounterEvidence, outsideRepo, invalidJson, duplicateLens });
+    return missing.length || invalidJson.length || duplicateLens.length ? 1 : 0;
   },
 
   /** Replies in a thread Sous started. Never in a thread you or anyone else started. */
   async reply(args) {
-    const [org, rawRepo, n, id, file] = args;
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { amend: { type: 'boolean' } } });
+    const [org, rawRepo, n, id, file] = positionals;
     const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
-    if (!org || !repo || !n || !id || !file) throw new Error('usage: sous reply <org> <owner/repo> <number> <sous-comment-id> <text-file>');
+    if (!org || !repo || !n || !id || !file) throw new Error('usage: sous reply <org> <owner/repo> <number> <sous-comment-id> <text-file> [--amend]');
     const config = loadConfig();
     const profile = loadProfile(org);
     const state = loadState(org);
@@ -564,11 +650,68 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
     // Sign with the head the reply speaks about, not the one Sous last reviewed.
     const pull = await get<{ head: { sha: string } }>(gh, `repos/${repo}/pulls/${n}`);
     const body = signed(text, config.attribution, pull.head.sha);
-    const posted = JSON.parse(await gh(['api', '-X', 'POST', `repos/${repo}/pulls/${n}/comments/${id}/replies`, '--input', '-'], JSON.stringify({ body }))) as { id: number };
+    const comments = await getAll<PrComment & { created_at: string }>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`);
+    const thread = comments.filter((c) => c.id === Number(id) || c.in_reply_to_id === Number(id));
+    const last = thread.length ? thread.reduce((a, c) => (c.id > a.id ? c : a)) : null;
+    const lastIsReply = last !== null && last.id !== Number(id) && sousHasLastWord(comments, pr, Number(id));
+    if (values.amend) {
+      // One reply per turn: rewrite the last one instead of adding a chain of corrections.
+      if (!last || !lastIsReply) throw new Error(`Sous has no last reply in thread ${id} to amend`);
+      await send(gh, 'PATCH', `repos/${repo}/pulls/comments/${last.id}`, { body });
+      logEvent(org, 'replied', { pr: key, thread: Number(id), reply: last.id, amended: true });
+      print({ amended: last.id });
+      return 0;
+    }
+    if (lastIsReply) throw new Error(`Sous has the last word in thread ${id}; edit that reply with --amend or resolve without replying`);
+    const started = new Date(Date.now() - 1000).toISOString();
+    let recovered = false;
+    const posted = await gh(['api', '-X', 'POST', `repos/${repo}/pulls/${n}/comments/${id}/replies`, '--input', '-'], JSON.stringify({ body }))
+      .then((out) => JSON.parse(out) as { id: number; pull_request_review_id?: number })
+      .catch(async (e) => {
+        // A 5xx can come after GitHub stored the comment: adopt it rather than lose it or post twice.
+        const mine = (await getAll<PrComment & { created_at: string; pull_request_review_id?: number }>(gh, `repos/${repo}/pulls/${n}/comments?per_page=100`)).find((c) => c.in_reply_to_id === Number(id) && c.created_at >= started && c.body.trim() === body.trim());
+        if (!mine) throw e;
+        recovered = true;
+        return { id: mine.id, pull_request_review_id: mine.pull_request_review_id };
+      });
     pr.replyIds.push(posted.id);
+    // GitHub wraps each reply in its own review; record it so it never reads as Sivantha's own review.
+    if (posted.pull_request_review_id) pr.reviewIds.push(posted.pull_request_review_id);
     saveState(org, state);
-    logEvent(org, 'replied', { pr: key, thread: Number(id), reply: posted.id });
+    logEvent(org, 'replied', { pr: key, thread: Number(id), reply: posted.id, ...(recovered ? { recovered: true } : {}) });
     print({ replied: posted.id });
+    return 0;
+  },
+
+  /**
+   * Greps every other cached repo of the PR's owner for names, with the token, so a blob a partial clone
+   * lacks is fetched instead of failing in the sandbox. A repo that fails says so: never read as no match.
+   */
+  async grep(args) {
+    const [org, rawRepo, ...names] = args;
+    const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
+    if (!org || !repo || names.length === 0) throw new Error('usage: sous grep <org> <owner/repo under review> <name>...');
+    const { stdout: token } = await run('gh', ['auth', 'token', '--user', loadProfile(org).ghAccount]);
+    const env = { ...process.env, GH_TOKEN: token.trim() };
+    const [owner, own] = repo.split('/');
+    const root = join(sousHome(), 'cache', owner!);
+    const out: { repo: string; matches?: string[]; error?: string }[] = [];
+    for (const name of existsSync(root) ? readdirSync(root) : []) {
+      const clone = join(root, name);
+      if (name.toLowerCase() === own!.toLowerCase() || !existsSync(join(clone, '.git'))) continue;
+      try {
+        await run('git', ['fetch', '-q', '--prune', 'origin'], { cwd: clone, env });
+        const r = await run('git', ['grep', '-n', '-I', ...names.flatMap((x) => ['-e', x]), 'origin/HEAD'], { cwd: clone, env, maxBuffer: 16 * 1024 * 1024 }).catch((e: { code?: number; stdout?: string }) => {
+          // git grep exits 1 when nothing matches; anything else is a failure.
+          if (e.code === 1) return { stdout: '' };
+          throw e;
+        });
+        out.push({ repo: `${owner}/${name}`, matches: r.stdout.split('\n').filter(Boolean).map((l) => l.replace(/^origin\/HEAD:/, '')) });
+      } catch (e) {
+        out.push({ repo: `${owner}/${name}`, error: (e as Error).message.split('\n')[0]!.slice(0, 200) });
+      }
+    }
+    print(out);
     return 0;
   },
 
@@ -647,7 +790,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
       reviews: reviews.filter((r) => pr.reviewIds.includes(r.id)).map((r) => ({ id: r.id, state: r.state, commit: r.commit_id })),
       blocking: reviews.filter((r) => pr.reviewIds.includes(r.id) && r.state === 'CHANGES_REQUESTED').map((r) => r.id),
       findings: comments
-        .filter((c) => pr.commentIds.includes(c.id))
+        .filter((c) => pr.commentIds.includes(c.id) && !c.in_reply_to_id && !pr.replyIds.includes(c.id))
         .map((c) => ({ id: c.id, path: c.path, line: c.line, outdated: c.line === null, resolved: resolved.has(c.id), sousHasLastWord: sousHasLastWord(comments, pr, c.id), body: c.body.split('\n\n')[0], sous: hasMarker(c.body) })),
     });
     return 0;
@@ -835,6 +978,14 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
    * `sous memory hits <org>`: when each bullet last drove a posted finding, for pruning.
    */
   async memory(args) {
+    if (args[0] === 'commit') {
+      // Commits memory unsigned, from outside the sandbox: a signed commit needs a key agents can't read.
+      const [, org, message] = args;
+      if (!org || !message) throw new Error('usage: sous memory commit <org|me> "<message>"');
+      await commitMemory(org === 'me' ? meDir() : orgDir(org), message);
+      print({ committed: org });
+      return 0;
+    }
     if (args[0] === 'hits') {
       const org = args[1];
       if (!org) throw new Error('usage: sous memory hits <org>');
@@ -923,7 +1074,7 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
    * newest session run from this folder. With --org, logs it as a usage event.
    */
   async tokens(args) {
-    const { values } = parseArgs({ args, options: { session: { type: 'string' }, org: { type: 'string' }, label: { type: 'string' }, cwd: { type: 'string' } } });
+    const { values } = parseArgs({ args, options: { session: { type: 'string' }, org: { type: 'string' }, label: { type: 'string' }, cwd: { type: 'string' }, since: { type: 'string' } } });
     const projects = projectsDir(values.cwd ?? process.cwd());
     if (!existsSync(projects)) throw new Error(`no Claude Code transcripts at ${projects}`);
     const session =
@@ -934,19 +1085,22 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
         .sort((a, b) => b.t - a.t)[0]?.id;
     if (!session) throw new Error('no sessions found');
     const mainLog = readFileSync(join(projects, `${session}.jsonl`), 'utf8');
-    const byAgent: Record<string, Record<string, Usage>> = { main: usageByModel(mainLog) };
+    // A session that already logged usage is costed from that point on, so a second review isn't the session's whole total.
+    const since = values.since ?? (values.org ? readEvents(values.org).filter((e) => e.type === 'usage' && e.session === session).at(-1)?.at : undefined);
+    const floor = since ? Date.parse(since) : undefined;
+    const byAgent: Record<string, Record<string, Usage>> = { main: usageByModel(mainLog, floor) };
     // Wall time: the main session's span is the run's; a type's is the sum of its subagents' spans.
-    const seconds: Record<string, number> = { main: spanSeconds(mainLog) };
+    const seconds: Record<string, number> = { main: spanSeconds(mainLog, floor) };
     const subDir = join(projects, session, 'subagents');
     for (const f of subagentLogs(subDir)) {
       const meta = readJson<{ agentType?: string }>(f.replace(/\.jsonl$/, '.meta.json'), {});
       const type = meta.agentType ?? 'unknown';
       const log = readFileSync(f, 'utf8');
-      byAgent[type] = mergeUsage(byAgent[type] ?? {}, usageByModel(log));
-      seconds[type] = (seconds[type] ?? 0) + spanSeconds(log);
+      byAgent[type] = mergeUsage(byAgent[type] ?? {}, usageByModel(log, floor));
+      seconds[type] = (seconds[type] ?? 0) + spanSeconds(log, floor);
     }
     const totals = Object.values(byAgent).reduce((t, u) => mergeUsage(t, u), {} as Record<string, Usage>);
-    if (values.org) logEvent(values.org, 'usage', { session, label: values.label ?? '', byAgent, totals, seconds });
+    if (values.org) logEvent(values.org, 'usage', { session, label: values.label ?? '', byAgent, totals, seconds, ...(since ? { since } : {}) });
     print({ session, byAgent, totals, seconds });
     return 0;
   },
@@ -1033,15 +1187,42 @@ const commands: Record<string, (args: string[]) => Promise<number>> = {
 
   /** How deep to review: lenses, the missed pass and risk drivers, from the changed paths alone. */
   async plan(args) {
-    const [org, rawRepo, n] = args;
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { since: { type: 'string' } } });
+    const [org, rawRepo, n] = positionals;
     const repo = rawRepo && org ? repoArg(org, rawRepo) : rawRepo;
-    if (!org || !repo || !n) throw new Error('usage: sous plan <org> <owner/repo> <number>');
+    if (!org || !repo || !n) throw new Error('usage: sous plan <org> <owner/repo> <number> [--since <reviewed head>]');
     const profile = loadProfile(org);
+    // An earlier review of this PR that never posted leaves drafts at the paths this one writes; move them aside.
+    const drafts = join(orgDir(org), 'drafts');
+    const prefix = `${repo.split('/')[1]}-${n}-`;
+    const old = existsSync(drafts) ? readdirSync(drafts, { withFileTypes: true }).filter((e) => e.isFile() && e.name.startsWith(prefix)) : [];
+    if (old.length) {
+      const dest = join(drafts, `stale-${new Date().toISOString().slice(0, 10)}`);
+      mkdirSync(dest, { recursive: true });
+      for (const e of old) renameSync(join(drafts, e.name), join(dest, e.name));
+    }
     const gh = await ghFor(profile.ghAccount);
     const pull = await get<{ body: string | null; base: { ref: string }; head: { repo: { default_branch: string } | null } }>(gh, `repos/${repo}/pulls/${n}`);
-    const files = (await getAll<{ filename: string; additions: number; deletions: number }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).filter((f) => !isNoise(f.filename));
+    const clone = join(sousHome(), 'cache', repo);
+    const atBase = (path: string): string => {
+      try {
+        return execFileSync('git', ['show', `origin/${pull.base.ref}:${path}`], { cwd: clone, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch {
+        return '';
+      }
+    };
+    // What the repo itself declares generated, read at the base (never the head, which could hide its own changes).
+    const declared = existsSync(clone) ? generatedGlobs(atBase('.gitattributes'), atBase('.coderabbit.yaml')) : [];
+    const generated = (p: string) => declared.some((g) => matchesGlob(p, g));
+    let files = (await getAll<{ filename: string; additions: number; deletions: number }>(gh, `repos/${repo}/pulls/${n}/files?per_page=100`)).filter((f) => !isNoise(f.filename) && !generated(f.filename));
+    if (values.since) {
+      // An incremental review is sized by the range it reads, kept to the PR's own files so a base merge doesn't count.
+      const own = new Set(files.map((f) => f.filename));
+      const head = (await get<{ head: { sha: string } }>(gh, `repos/${repo}/pulls/${n}`)).head.sha;
+      files = ((await get<{ files?: { filename: string; additions: number; deletions: number }[] }>(gh, `repos/${repo}/compare/${values.since}...${head}`)).files ?? []).filter((f) => own.has(f.filename));
+    }
     const stacked = pull.base.ref !== (pull.head.repo?.default_branch ?? 'main');
-    print(plan(files, { stacked, orgRules: profile.ruleSources.length > 0, body: stripHidden(pull.body ?? '').text }));
+    print({ ...plan(files, { stacked, orgRules: profile.ruleSources.length > 0, body: stripHidden(pull.body ?? '').text }), ...(old.length ? { staleDraftsMoved: old.length } : {}) });
     return 0;
   },
 

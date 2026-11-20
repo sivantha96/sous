@@ -47,9 +47,10 @@ test('a failed decisions check goes back to the verifier, never a hand fix', () 
 
 test('lenses get file lines and repo paths, not context-file copies', () => {
   const body = (f: string) => agents.find(([n]) => n === f)![1];
-  assert.match(body('gatherer.md'), /never retype code/);
-  assert.match(body('gatherer.md'), /hunk header/);
-  assert.match(body('gatherer.md'), /never from an earlier context file/);
+  // Patches reach lenses only through checkout's diff file, as git printed them; the gatherer never copies them.
+  assert.match(body('gatherer.md'), /Never copy patches into the context/);
+  assert.match(body('gatherer.md'), /`diffFile`/);
+  assert.match(body('lens.md'), /the diff file it names/);
   assert.match(body('lens.md'), /never a line of the context file/);
   assert.match(body('lens.md'), /never the context file/);
   assert.match(body('verifier.md'), /never a file in `~\/\.sous\/`/);

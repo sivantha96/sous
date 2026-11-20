@@ -50,3 +50,11 @@ test('testing notes are a testing heading, a checked test box, a command block o
     assert.ok(hasTestingNotes(body), body);
   for (const body of ['', 'Adds refunds.', '- [ ] Tested', '## How it works', 'see the attestation flow']) assert.ok(!hasTestingNotes(body), body);
 });
+
+test("file-name words count as triggers, whole words only, and a plain or bold testing line counts as notes", () => {
+  const p = plan([f('apps/x/src/components/Button.tsx', 300), f('apps/x/src/middlewares/auth.middleware.ts', 50)], { stacked: false, orgRules: false });
+  assert.equal(p.order[0], 'apps/x/src/middlewares/auth.middleware.ts');
+  assert.ok(plan([f('src/seeders/20260101-backfill.ts', 30)], { stacked: false, orgRules: false }).drivers.includes('database or migrations'));
+  assert.ok(!plan([f('src/tokenizer.ts', 30)], { stacked: false, orgRules: false }).drivers.includes('auth, tenancy or money'));
+  for (const body of ['How it was tested\n- ran it', '**Testing:**\n- ran it']) assert.ok(hasTestingNotes(body), body);
+});

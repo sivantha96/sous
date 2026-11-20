@@ -216,3 +216,10 @@ test('every agent may read sous help, and nothing more through it', () => {
   assert.ok(!checkCommand('./bin/sous post d.json --help', 'reader', '/tmp').ok);
   assert.ok(!checkCommand('./bin/sous post d.json', 'reader', '/tmp').ok);
 });
+
+test('readers may list threads, grep cached repos and list candidates; only the reflector commits memory', () => {
+  assert.ok(ok('./bin/sous threads o o/r 1'));
+  assert.ok(ok('./bin/sous grep o o/r name'));
+  assert.ok(!ok('./bin/sous memory commit o x'));
+  assert.ok(ok('./bin/sous memory commit o x', roleOf('reflector')));
+});

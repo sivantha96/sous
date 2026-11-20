@@ -19,7 +19,7 @@ export interface DueItem {
   gate: GateResult;
   /** Replies and reactions on Sous's threads, for the reply judge. Empty when there are none. */
   threads: ThreadSignal[];
-  /** `incremental`: the previous head is an ancestor and the merge base is unchanged, so only commits after `since` are new. */
+  /** `incremental`: the previous head is an ancestor, so `sous checkout --since` reviews only the files whose own patch changed after `since` (a base merge alone changes none). */
   scope: 'full' | 'incremental';
   since?: string;
 }
@@ -41,7 +41,8 @@ export function patchId(files: { filename: string; patch?: string }[]): string {
 /** How a push relates to what Sous reviewed: review only the delta, skip it, or review in full. */
 export function pushScope(seen: { head: string; mergeBase?: string; patchId?: string }, now: { compareStatus: string; mergeBase: string; patchId: string }): 'incremental' | 'skip' | 'full' {
   if (seen.patchId && seen.patchId === now.patchId) return 'skip';
-  if (now.compareStatus === 'ahead' && seen.mergeBase && seen.mergeBase === now.mergeBase) return 'incremental';
+  // A base merged in moves the merge base but not the PR's own patch; checkout --since compares patches per file.
+  if (now.compareStatus === 'ahead') return 'incremental';
   return 'full';
 }
 
@@ -56,8 +57,9 @@ export function classify(state: OrgState, repo: string, n: number, head: string)
 }
 
 /** Your own latest review, ignoring reviews Sous posted. A head you reviewed yourself is not due. */
-export function yourLatestHead(reviews: { user: { login: string } | null; commit_id: string; body: string | null; submitted_at?: string }[], me: string): string | null {
-  const yours = reviews.filter((r) => r.user?.login === me && !hasMarker(r.body) && r.submitted_at);
+export function yourLatestHead(reviews: { user: { login: string } | null; commit_id: string; body: string | null; submitted_at?: string; state?: string }[], me: string): string | null {
+  // An empty COMMENTED review is GitHub's wrapper for a thread reply, not a review of the head.
+  const yours = reviews.filter((r) => r.user?.login === me && !hasMarker(r.body) && r.submitted_at && !(r.state === 'COMMENTED' && !r.body));
   return yours.sort((a, b) => b.submitted_at!.localeCompare(a.submitted_at!))[0]?.commit_id ?? null;
 }
 
@@ -155,8 +157,11 @@ export async function findDue(gh: Gh, profile: Profile, state: OrgState, me: str
       return;
     }
     const reason = pushed;
-    const reviews = await getAll<Parameters<typeof yourLatestHead>[0][number]>(gh, `repos/${repo}/pulls/${item.number}/reviews?per_page=100`);
+    const reviews = await getAll<Parameters<typeof yourLatestHead>[0][number] & { id: number; state: string }>(gh, `repos/${repo}/pulls/${item.number}/reviews?per_page=100`);
     if (yourLatestHead(reviews, me) === pull.head.sha) return;
+    // GitHub allows one pending review per person per PR, and Sous posts as you: yours blocks every post.
+    const pendingReview = reviews.find((r) => r.user?.login === me && r.state === 'PENDING');
+    if (pendingReview) return void skipped.push({ pr: key, why: `blocked: your pending review ${pendingReview.id} (commit ${pendingReview.commit_id.slice(0, 8)}) blocks posting; submit or delete it on GitHub` });
     const fileList = await getAll<{ filename: string; patch?: string }>(gh, `repos/${repo}/pulls/${item.number}/files?per_page=100`);
     const files = fileList.map((f) => f.filename);
     if (isNoiseOnly(files)) return void skipped.push({ pr: key, why: 'only lockfiles or generated files' });

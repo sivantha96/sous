@@ -56,7 +56,8 @@ export function loadProfile(org: string): Profile {
   for (const key of ['org', 'ghAccount', 'postingMode'] as const) {
     if (!p[key]) throw new Error(`${profilePath(org)}: "${key}" is missing`);
   }
-  if (p.org !== org) throw new Error(`${profilePath(org)}: "org" is ${p.org}, expected ${org}`);
+  // GitHub names are case-insensitive: `Acme-Inc` and `acme-inc` are one org.
+  if (p.org!.toLowerCase() !== org.toLowerCase()) throw new Error(`${profilePath(org)}: "org" is ${p.org}, expected ${org}`);
   if (p.postingMode !== 'post' && p.postingMode !== 'draft') throw new Error(`${profilePath(org)}: "postingMode" must be post or draft`);
   return {
     org,

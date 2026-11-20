@@ -9,12 +9,12 @@ Input: an org. Read `~/.sous/orgs/<org>/state.json` and the last `learned` line 
 
 Run each `gh api` call on its own, with no pipe or chain, so it leaves the sandbox with the token. Start with two repo-wide reads since the later of the earliest `reviewedAt` and the last `learned` line's `run`: `repos/<repo>/pulls/comments?since=<time>` and `repos/<repo>/issues/comments?since=<time>`. Read per PR only when those show activity on it or its head moved.
 
-For each PR in state with a `reviewedAt`, collect since the later of its `reviewedAt` and that `run`, by reading with `gh api`:
+For each PR in state with a `reviewedAt`, collect since the later of its `reviewedAt` and that `run`, by reading `./bin/sous prtext <org> <repo> <n> --json` (one call per PR; it has every comment and review with ids, replies, state, reactions and `updatedAt`), and `gh api` only for what it lacks (`issues/<n>/events`, compares):
 
 1. Sivantha's own comments and reviews on the PR (no `<!-- sous:` marker), including "Owner decisions" comments. For a review whose state is `DISMISSED`, read `repos/<repo>/issues/<n>/events` and report the `review_dismissed` event's `dismissed_review.state` and `dismissal_message`; one dismissed with "The merge-base changed after approval." is an approval. On a PR Sivantha authored, mark their replies to Sous `"author": true`: they are the author defending or explaining the change, not a reviewer's decision.
 2. Edits or deletions of Sous comments (a Sous comment id from state that is gone or whose body changed).
 3. Replies and reactions on Sous comments, with author.
-4. Whether each Sous finding's lines changed in a later commit, and whether the PR merged.
+4. Whether each Sous finding's lines changed in a later commit, and whether the PR merged. A finding was posted at its comment's `original_commit_id` (the review's `commit_id`); GitHub moves a comment's `commit_id` to the new head after a push or rebase, so never compare that one with the state head.
 
 Write `~/.sous/orgs/<org>/signals.json` with what you found (Read it first if it exists). Put `since` in signals.json, and list a signal from before it only under `alreadyLearned`. Reply with one line: the count of each kind. Reply "no signals" when all counts are zero.
 
