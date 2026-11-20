@@ -31,17 +31,19 @@ export function addUsage(u: Usage, block: { input_tokens?: number; output_tokens
 }
 
 /** Sums one transcript's replies by model. Duplicate reply ids (streamed parts) count once. */
-export function usageByModel(jsonl: string): Record<string, Usage> {
+/** `since` (epoch ms) counts only lines at or after it, so a second review in one session is costed alone. */
+export function usageByModel(jsonl: string, since?: number): Record<string, Usage> {
   const out: Record<string, Usage> = {};
   const seen = new Set<string>();
   for (const line of jsonl.split('\n')) {
     if (!line.trim()) continue;
-    let d: { message?: { id?: string; model?: string; usage?: Parameters<typeof addUsage>[1] } };
+    let d: { timestamp?: string; message?: { id?: string; model?: string; usage?: Parameters<typeof addUsage>[1] } };
     try {
       d = JSON.parse(line);
     } catch {
       continue;
     }
+    if (since !== undefined && !(Date.parse(d.timestamp ?? '') >= since)) continue;
     const m = d.message;
     if (!m?.usage || !m.model) continue;
     if (m.id) {
@@ -73,7 +75,7 @@ export function subagentLogs(subDir: string): string[] {
 }
 
 /** Seconds from a transcript's first to last timestamped line: how long that agent ran. */
-export function spanSeconds(jsonl: string): number {
+export function spanSeconds(jsonl: string, since?: number): number {
   let first = Infinity;
   let last = -Infinity;
   for (const line of jsonl.split('\n')) {
@@ -83,7 +85,7 @@ export function spanSeconds(jsonl: string): number {
     } catch {
       continue;
     }
-    if (Number.isNaN(t)) continue;
+    if (Number.isNaN(t) || (since !== undefined && t < since)) continue;
     first = Math.min(first, t);
     last = Math.max(last, t);
   }

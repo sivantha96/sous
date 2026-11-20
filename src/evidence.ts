@@ -8,14 +8,17 @@ export function diffLines(patch: string | undefined): { RIGHT: Set<number>; LEFT
   const out = { RIGHT: new Set<number>(), LEFT: new Set<number>() };
   let left = 0;
   let right = 0;
+  let inHunk = false;
   for (const row of (patch ?? '').split('\n')) {
     const hunk = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/.exec(row);
     if (hunk) {
       left = Number(hunk[1]);
       right = Number(hunk[2]);
+      inHunk = true;
       continue;
     }
-    if (right === 0 || row.startsWith('\\')) continue;
+    // A deleted file's header is `+0,0`, so `right === 0` can't mean "before the first hunk".
+    if (!inHunk || row.startsWith('\\')) continue;
     if (row.startsWith('-')) out.LEFT.add(left++);
     else if (row.startsWith('+')) out.RIGHT.add(right++);
     else {
@@ -60,9 +63,20 @@ export interface EvidenceContext {
 export function verifyEvidence(findings: Finding[], ctx: EvidenceContext): { findings: Finding[]; problems: { index: number; problem: string }[] } {
   const anchors = new Map(ctx.files.map((f) => [f.filename, diffLines(f.patch)]));
   const problems: { index: number; problem: string }[] = [];
+  // A file the PR deletes is gone from the head tree, but a short path to it still completes.
+  const paths = [...new Set([...ctx.tree, ...ctx.files.map((f) => f.filename)])];
   const fixQuote = (q: Quote, index: number, what: string): Quote => {
     const side = q.side ?? 'RIGHT';
-    const path = completePath(q.path, ctx.tree) ?? q.path;
+    const path = completePath(q.path, paths) ?? q.path;
+    if (!q.side) {
+      // No side given: a quote missing at the head may be removed code; accept it only on a LEFT line of the diff.
+      const head = ctx.read('RIGHT', path);
+      if (!head || locate(head, q.line, q.quote) === null) {
+        const base = ctx.read('LEFT', path);
+        const at = base ? locate(base, q.line, q.quote) : null;
+        if (at !== null && anchors.get(path)?.LEFT.has(at)) return { ...q, path, line: at, side: 'LEFT' };
+      }
+    }
     const lines = ctx.read(side, path);
     if (!lines) {
       problems.push({ index, problem: `${what} ${q.path}: file not found at ${side === 'LEFT' ? 'the base' : 'the head'}` });
@@ -78,7 +92,7 @@ export function verifyEvidence(findings: Finding[], ctx: EvidenceContext): { fin
   const out = findings.map((f, index) => {
     const side = f.side ?? 'RIGHT';
     let { path, line } = f;
-    path = completePath(path, ctx.tree) ?? path;
+    path = completePath(path, paths) ?? path;
     // A one-line "range" is a plain comment.
     const startLine = f.startLine === f.line ? undefined : f.startLine;
     // A range's quote may be its first line (the verifier's anchor); the writer moves `line` to the last.

@@ -10,4 +10,4 @@ For each changed entry point (a route, handler, job, migration, exported functio
 - **Abuse of trust:** a caller skipping the UI, a missing permission check on one of several paths, a secret or id leaking into a log, a URL or response.
 - **State left behind:** a migration on a table that already has rows, a cache or flag that outlives the change, a rollback that no longer works.
 
-Keep only attacks you can walk through in the code with a concrete input and the wrong result it gives. On a second round you are given the findings already verified: break the same code another way, never restate them.
+Keep only attacks you can walk through in the code with a concrete input and the wrong result it gives. On a second round you are given the findings already verified: break the same code another way, never restate them. Reply with `"lens": "breaker2"` and ids `breaker2-<n>`.

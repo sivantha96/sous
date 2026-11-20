@@ -21,7 +21,7 @@ export interface Plan {
 
 /** Matched on whole path segments, never substrings: `token` must not match `tokenizer`. */
 const TRIGGERS: { name: string; segments: RegExp; lenses: string[]; weight: number }[] = [
-  { name: 'database or migrations', segments: /^(migrations?|db|sql|schema|drizzle|prisma)$/, lenses: ['specs-and-safety', 'security'], weight: 25 },
+  { name: 'database or migrations', segments: /^(migrations?|seeders?|db|sql|schema|drizzle|prisma)$/, lenses: ['specs-and-safety', 'security'], weight: 25 },
   { name: 'auth, tenancy or money', segments: /^(auth|authn|authz|session|sessions|tenant|tenants|tenancy|payments?|billing|money|stripe|wallet|rbac|permissions?)$/, lenses: ['security', 'specs-and-safety'], weight: 25 },
   { name: 'infrastructure or CI', segments: /^(infra|pulumi|terraform|\.github|workflows|policy|iam)$/, lenses: ['org-rules', 'security'], weight: 20 },
   { name: 'public contracts', segments: /^(contracts?|openapi|api|routes|events|webhooks?|proto|graphql)$/, lenses: ['contracts', 'specs-and-safety'], weight: 15 },
@@ -36,12 +36,20 @@ const isTest = (p: string): boolean => /(^|\/)(tests?|__tests__|spec)\//.test(p)
 /** Lenses every review runs, whatever the paths. */
 const ALWAYS = ['correctness', 'tests-and-guards', 'pr-hygiene', 'docs-and-decisions'];
 
-/** A testing heading, a checked test box, a command block, or an image or video in the PR description. */
+/** A testing heading or heading-like line, a checked test box, a command block, or an image or video in the PR description. */
 export const hasTestingNotes = (body: string): boolean =>
   /^#{1,6}\s*(how\b[^\n]*\btest\w*|test(ing|ed|s)?|evidence|verification|verified|qa)\b/im.test(body) ||
+  // The same heading as a plain or bold line of its own ("How it was tested", "**Testing:**").
+  /^\s*(\*\*|__)?(how\b[^\n]*\btest\w*\??|testing|test plan|tested|verification|qa)(\*\*|__)?\s*:?\s*(\*\*|__)?\s*$/im.test(body) ||
   /^\s*[-*]\s*\[x\].*\b(test|verif|tried|ran)/im.test(body) ||
   /```[\s\S]*?\b(test|curl|pnpm|npm|yarn|pytest|go test)\b[\s\S]*?```/i.test(body) ||
   /!\[[^\]]*\]\(|<img\s|<video\s|\.(png|jpe?g|gif|mp4|mov)\b/i.test(body);
+
+/** A path's segments plus the words of its file name: `auth.middleware.ts` also gives `auth` and `middleware`. Still whole words, so `tokenizer.ts` never matches `token`. */
+const words = (path: string): string[] => {
+  const segments = path.split('/');
+  return [...segments, ...(segments.at(-1) ?? '').split(/[.\-_]/).filter(Boolean)];
+};
 
 export function plan(files: PlanFile[], opts: { stacked: boolean; orgRules: boolean; body?: string }): Plan {
   const drivers = new Set<string>();
@@ -49,7 +57,7 @@ export function plan(files: PlanFile[], opts: { stacked: boolean; orgRules: bool
   let risk = 0;
   const weightOf = new Map<string, number>();
   for (const f of files) {
-    const segments = f.filename.split('/');
+    const segments = words(f.filename);
     let w = 0;
     for (const t of TRIGGERS) {
       if (segments.some((s) => t.segments.test(s))) {

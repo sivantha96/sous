@@ -50,7 +50,7 @@ export async function get<T>(gh: Gh, path: string): Promise<T> {
   return JSON.parse(await gh(['api', path])) as T;
 }
 
-export async function send<T>(gh: Gh, method: 'POST' | 'PUT', path: string, body: unknown): Promise<T> {
+export async function send<T>(gh: Gh, method: 'POST' | 'PUT' | 'PATCH', path: string, body: unknown): Promise<T> {
   return JSON.parse(await gh(['api', '-X', method, path, '--input', '-'], JSON.stringify(body))) as T;
 }
 

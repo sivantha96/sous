@@ -6,7 +6,7 @@ import type { Usage } from './usage.ts';
  * to the median of the runs before it. A run is every event from its start time on; its cost is the
  * `usage` event `/run` logs with the label `run`, or `/review` with `review`.
  */
-const PROBLEMS = new Set(['lint-refused', 'outbound-refused', 'blocked', 'skipped', 'deferred', 'dropped', 'request-not-restored']);
+const PROBLEMS = new Set(['lint-refused', 'outbound-refused', 'blocked', 'skipped', 'deferred', 'dropped', 'request-not-restored', 'moved', 'post-failed']);
 
 /** Skips that are policy, not faults (src/due.ts). A rebase skip is the saving working, so it is no problem either. `runSummary` keeps both. */
 const BY_DESIGN = new Set(['bot author', 'only lockfiles or generated files']);

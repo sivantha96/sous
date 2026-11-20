@@ -115,7 +115,7 @@ function withStateLock(org: string, fn: () => void): void {
   }
 }
 
-export type EventType = 'reviewed' | 'deferred' | 'dismissed' | 'skipped' | 'lint-refused' | 'replied' | 'resolved' | 'seen' | 'adopted' | 'dropped' | 'request-not-restored' | 'rebase-skip' | 'usage' | 'eval-started' | 'outbound-refused' | 'blocked' | 'scored';
+export type EventType = 'reviewed' | 'deferred' | 'dismissed' | 'skipped' | 'lint-refused' | 'replied' | 'resolved' | 'seen' | 'adopted' | 'dropped' | 'request-not-restored' | 'rebase-skip' | 'usage' | 'eval-started' | 'outbound-refused' | 'blocked' | 'scored' | 'moved' | 'post-failed';
 
 /** One append-only log every metric reads from. */
 export function logEvent(org: string, type: EventType, data: Record<string, unknown>): void {

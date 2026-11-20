@@ -50,6 +50,22 @@ test('missing counter-evidence, a wrong quote and a LEFT anchor on a removed lin
   assert.deepEqual(left.problems, []);
 });
 
+test("a deleted file's lines are LEFT anchors, and evidence on removed code with no side is found at the base", () => {
+  assert.deepEqual([...diffLines('@@ -1,3 +0,0 @@\n-a\n-b\n-c').LEFT], [1, 2, 3]);
+  assert.deepEqual([...diffLines('@@ -1,3 +0,0 @@\n-a\n-b\n-c').RIGHT], []);
+  assert.deepEqual([...diffLines('@@ -0,0 +1,2 @@\n+a\n+b').RIGHT], [1, 2]);
+  const del = {
+    files: [{ filename: 'test/old.test.ts', patch: '@@ -1,3 +0,0 @@\n-a\n-it(x)\n-c' }, { filename: 'src/a.ts', patch }],
+    tree: ['src/a.ts', 'src/g.ts'],
+    read: (side: 'RIGHT' | 'LEFT', path: string) => (path === 'test/old.test.ts' ? (side === 'LEFT' ? ['a', 'it(x)', 'c'] : null) : ctx.read(side, path)),
+  };
+  const r = verifyEvidence([{ ...base, path: 'old.test.ts', side: 'LEFT', line: 2, quote: 'it(x)', evidence: [{ path: 'old.test.ts', line: 2, quote: 'it(x)' }] }], del);
+  assert.deepEqual(r.problems, []);
+  assert.equal(r.findings[0]!.evidence![0]!.side, 'LEFT');
+  const notInDiff = verifyEvidence([{ ...base, evidence: [{ path: 'src/a.ts', line: 2, quote: 'never anywhere' }] }], del);
+  assert.equal(notInDiff.problems.length, 1);
+});
+
 test('a repair changes only line, side, path or quote', () => {
   const [f] = applyCorrections([base], [{ index: 0, target: 'anchor', field: 'line', value: 2 }, { index: 0, target: 'anchor', field: 'body' as 'line', value: 'rewritten' }, { index: 0, target: 'evidence', item: 0, field: 'quote', value: 'a' }]);
   assert.equal(f!.line, 2);

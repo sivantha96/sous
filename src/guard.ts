@@ -28,7 +28,7 @@ export const roleOf = (agentType: string | undefined): Role => (agentType ? (ROL
 
 /** `sous` subcommands each role may run. Everything else in sous writes to GitHub or memory. */
 const SOUS: Record<Role, string[]> = {
-  reader: ['status', 'noise', 'checkout', 'gate', 'memory', 'facts', 'decisions', 'plan', 'links', 'stagekey', 'stats', 'prtext', 'owners', 'skills'],
+  reader: ['status', 'noise', 'checkout', 'gate', 'memory', 'facts', 'decisions', 'plan', 'links', 'stagekey', 'stats', 'prtext', 'owners', 'skills', 'threads', 'grep', 'candidates'],
   writer: ['status', 'noise', 'post', 'mark', 'memory', 'decisions'],
   'reply-judge': ['status', 'checkout', 'reply', 'resolve', 'seen', 'memory', 'facts'],
   reflector: ['status', 'leak-check', 'score', 'facts', 'memory', 'stats', 'tokens', 'stagekey', 'evalrun'],
@@ -130,6 +130,8 @@ function checkSous(argv: string[], role: Role): Verdict {
   const sub = argv[1];
   // Help only reads cli.ts's source and never runs a command.
   if ((sub === 'help' && argv.length === 2) || (sub && argv.length === 3 && argv[2] === '--help')) return { ok: true };
+  // `memory` reads for every role, but only the learning round commits it.
+  if (sub === 'memory' && argv[2] === 'commit' && role !== 'reflector') return no('only the reflector commits memory');
   return sub && SOUS[role].includes(sub) ? { ok: true } : no(`sous ${sub ?? ''} is not allowed for this agent`);
 }
 
