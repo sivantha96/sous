@@ -3,7 +3,7 @@ import { CONVENTION_FILES } from './noise.ts';
 type Run = (file: string, args: string[], opts: { cwd: string; env?: NodeJS.ProcessEnv; maxBuffer?: number }) => Promise<{ stdout: string }>;
 
 /** Every branch, not only the PR and its base: agents read stacked parents and siblings, which go stale otherwise. */
-export const fetchArgs = (n: string | number): string[] => ['fetch', '-q', '--prune', 'origin', `pull/${n}/head`, '+refs/heads/*:refs/remotes/origin/*'];
+export const fetchArgs = (n: string | number, prune = true): string[] => ['fetch', '-q', ...(prune ? ['--prune'] : []), 'origin', `pull/${n}/head`, '+refs/heads/*:refs/remotes/origin/*'];
 
 /**
  * Downloads the base copies agents read with `git show`: the clone is partial, and an agent's sandbox
@@ -20,7 +20,9 @@ export function patchesByFile(diff: string): Map<string, string> {
   for (const part of diff.split(/^(?=diff --git )/m)) {
     const name = /^diff --git a\/.+? b\/(.+)$/m.exec(part)?.[1];
     if (!name) continue;
-    out.set(name, part.split('\n').filter((l) => !l.startsWith('index ') && !l.startsWith('@@')).join('\n'));
+    // A binary file's patch is only `Binary files ... differ`: keep its index line, or every change reads as none.
+    const binary = /^Binary files /m.test(part);
+    out.set(name, part.split('\n').filter((l) => (binary || !l.startsWith('index ')) && !l.startsWith('@@')).join('\n'));
   }
   return out;
 }

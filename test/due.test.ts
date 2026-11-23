@@ -117,8 +117,11 @@ test('your pending review skips the PR as blocked, since GitHub allows one per p
   assert.match(r.skipped[0]!.why, /^blocked: your pending review 9 \(commit abcdef12\)/);
 });
 
-test("an empty COMMENTED review is GitHub's wrapper for a thread reply, not your review of the head", async () => {
-  const { yourLatestHead } = await import('../src/due.ts');
-  assert.equal(yourLatestHead([{ user: { login: 'me' }, commit_id: 'h', body: '', submitted_at: '2026-11-01', state: 'COMMENTED' }], 'me'), null);
-  assert.equal(yourLatestHead([{ user: { login: 'me' }, commit_id: 'h', body: '', submitted_at: '2026-11-01', state: 'APPROVED' }], 'me'), 'h');
+test("Sous's recorded reply wrappers are not your review of the head; your own inline-only review is", async () => {
+  const { yourLatestHead, pushScope } = await import('../src/due.ts');
+  const r = { id: 7, user: { login: 'me' }, commit_id: 'h', body: '', submitted_at: '2026-11-01' };
+  assert.equal(yourLatestHead([r], 'me', [7]), null);
+  assert.equal(yourLatestHead([r], 'me'), 'h', 'an empty-body review of yours with inline comments still counts');
+  // A head only baselined (no review posted, so no mergeBase) is reviewed in full on its next push.
+  assert.equal(pushScope({ head: 'h1', patchId: 'a' }, { compareStatus: 'ahead', mergeBase: 'm1', patchId: 'b' }), 'full');
 });
